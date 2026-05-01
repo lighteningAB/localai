@@ -1,0 +1,6 @@
+R_DEF: Internal format may change without notice
+local
+id status_text
+layout activity_status
+string app_name
+style Theme.LocalAi

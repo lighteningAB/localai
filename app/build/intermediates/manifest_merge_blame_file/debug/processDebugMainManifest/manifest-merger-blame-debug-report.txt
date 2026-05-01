@@ -1,0 +1,227 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.nothing.localai.debug"
+4    android:versionCode="1"
+5    android:versionName="0.1.0-debug" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="31"
+9        android:targetSdkVersion="36" />
+10
+11    <!--
+12         BIND_AI guards the inference service.
+13         Dev: protectionLevel="normal" — any app that declares <uses-permission> can bind.
+14         Prod: change to "signature" once localai and Aiwidget are signed by the same key.
+15    -->
+16    <permission
+16-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:8:5-10:44
+17        android:name="com.nothing.localai.permission.BIND_AI"
+17-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:9:9-62
+18        android:protectionLevel="normal" />
+18-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:10:9-41
+19
+20    <uses-permission android:name="android.permission.INTERNET" />
+20-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:12:5-67
+20-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:12:22-64
+21    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+21-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:13:5-79
+21-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:13:22-76
+22    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+22-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:14:5-77
+22-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:14:22-74
+23    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+23-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:15:5-87
+23-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:15:22-84
+24    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+24-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:16:5-77
+24-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:16:22-74
+25
+26    <permission
+26-->[androidx.core:core:1.15.0] /Users/patrickfan/.gradle/caches/8.12/transforms/276be6965983aa840274d4510360d060/transformed/core-1.15.0/AndroidManifest.xml:22:5-24:47
+27        android:name="com.nothing.localai.debug.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+27-->[androidx.core:core:1.15.0] /Users/patrickfan/.gradle/caches/8.12/transforms/276be6965983aa840274d4510360d060/transformed/core-1.15.0/AndroidManifest.xml:23:9-81
+28        android:protectionLevel="signature" />
+28-->[androidx.core:core:1.15.0] /Users/patrickfan/.gradle/caches/8.12/transforms/276be6965983aa840274d4510360d060/transformed/core-1.15.0/AndroidManifest.xml:24:9-44
+29
+30    <uses-permission android:name="com.nothing.localai.debug.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+30-->[androidx.core:core:1.15.0] /Users/patrickfan/.gradle/caches/8.12/transforms/276be6965983aa840274d4510360d060/transformed/core-1.15.0/AndroidManifest.xml:26:5-97
+30-->[androidx.core:core:1.15.0] /Users/patrickfan/.gradle/caches/8.12/transforms/276be6965983aa840274d4510360d060/transformed/core-1.15.0/AndroidManifest.xml:26:22-94
+31
+32    <application
+32-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:18:5-47:19
+33        android:name="com.nothing.localai.LocalAiApp"
+33-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:19:9-35
+34        android:allowBackup="false"
+34-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:20:9-36
+35        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+35-->[androidx.core:core:1.15.0] /Users/patrickfan/.gradle/caches/8.12/transforms/276be6965983aa840274d4510360d060/transformed/core-1.15.0/AndroidManifest.xml:28:18-86
+36        android:debuggable="true"
+37        android:extractNativeLibs="false"
+38        android:icon="@android:drawable/sym_def_app_icon"
+38-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:21:9-58
+39        android:label="@string/app_name"
+39-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:22:9-41
+40        android:largeHeap="true"
+40-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:23:9-33
+41        android:supportsRtl="true"
+41-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:24:9-35
+42        android:theme="@style/Theme.LocalAi" >
+42-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:25:9-45
+43        <activity
+43-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:28:9-35:20
+44            android:name="com.nothing.localai.ui.StatusActivity"
+44-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:29:13-46
+45            android:exported="true" >
+45-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:30:13-36
+46            <intent-filter>
+46-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:31:13-34:29
+47                <action android:name="android.intent.action.MAIN" />
+47-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:32:17-69
+47-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:32:25-66
+48
+49                <category android:name="android.intent.category.LAUNCHER" />
+49-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:33:17-77
+49-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:33:27-74
+50            </intent-filter>
+51        </activity>
+52
+53        <service
+53-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:37:9-46:19
+54            android:name="com.nothing.localai.LocalAiService"
+54-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:38:13-43
+55            android:exported="true"
+55-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:39:13-36
+56            android:foregroundServiceType="dataSync"
+56-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:42:13-53
+57            android:permission="com.nothing.localai.permission.BIND_AI"
+57-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:40:13-72
+58            android:process=":inference" >
+58-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:41:13-41
+59            <intent-filter>
+59-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:43:13-45:29
+60                <action android:name="com.nothing.localai.BIND" />
+60-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:44:17-67
+60-->/Users/patrickfan/Documents/GitHub/localai/app/src/main/AndroidManifest.xml:44:25-64
+61            </intent-filter>
+62        </service>
+63
+64        <provider
+64-->[androidx.emoji2:emoji2:1.3.0] /Users/patrickfan/.gradle/caches/8.12/transforms/2f2d73ba29684b39770d22de535203e6/transformed/emoji2-1.3.0/AndroidManifest.xml:24:9-32:20
+65            android:name="androidx.startup.InitializationProvider"
+65-->[androidx.emoji2:emoji2:1.3.0] /Users/patrickfan/.gradle/caches/8.12/transforms/2f2d73ba29684b39770d22de535203e6/transformed/emoji2-1.3.0/AndroidManifest.xml:25:13-67
+66            android:authorities="com.nothing.localai.debug.androidx-startup"
+66-->[androidx.emoji2:emoji2:1.3.0] /Users/patrickfan/.gradle/caches/8.12/transforms/2f2d73ba29684b39770d22de535203e6/transformed/emoji2-1.3.0/AndroidManifest.xml:26:13-68
+67            android:exported="false" >
+67-->[androidx.emoji2:emoji2:1.3.0] /Users/patrickfan/.gradle/caches/8.12/transforms/2f2d73ba29684b39770d22de535203e6/transformed/emoji2-1.3.0/AndroidManifest.xml:27:13-37
+68            <meta-data
+68-->[androidx.emoji2:emoji2:1.3.0] /Users/patrickfan/.gradle/caches/8.12/transforms/2f2d73ba29684b39770d22de535203e6/transformed/emoji2-1.3.0/AndroidManifest.xml:29:13-31:52
+69                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+69-->[androidx.emoji2:emoji2:1.3.0] /Users/patrickfan/.gradle/caches/8.12/transforms/2f2d73ba29684b39770d22de535203e6/transformed/emoji2-1.3.0/AndroidManifest.xml:30:17-75
+70                android:value="androidx.startup" />
+70-->[androidx.emoji2:emoji2:1.3.0] /Users/patrickfan/.gradle/caches/8.12/transforms/2f2d73ba29684b39770d22de535203e6/transformed/emoji2-1.3.0/AndroidManifest.xml:31:17-49
+71            <meta-data
+71-->[androidx.lifecycle:lifecycle-process:2.8.4] /Users/patrickfan/.gradle/caches/8.12/transforms/2630523c4f8fbc1104bf919d9b2d4f49/transformed/lifecycle-process-2.8.4/AndroidManifest.xml:29:13-31:52
+72                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+72-->[androidx.lifecycle:lifecycle-process:2.8.4] /Users/patrickfan/.gradle/caches/8.12/transforms/2630523c4f8fbc1104bf919d9b2d4f49/transformed/lifecycle-process-2.8.4/AndroidManifest.xml:30:17-78
+73                android:value="androidx.startup" />
+73-->[androidx.lifecycle:lifecycle-process:2.8.4] /Users/patrickfan/.gradle/caches/8.12/transforms/2630523c4f8fbc1104bf919d9b2d4f49/transformed/lifecycle-process-2.8.4/AndroidManifest.xml:31:17-49
+74            <meta-data
+74-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:29:13-31:52
+75                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+75-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:30:17-85
+76                android:value="androidx.startup" />
+76-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:31:17-49
+77        </provider>
+78        <!--
+79             Applications that target Android S+ require explicit declaration of
+80             any referenced vendor-provided libraries.
+81        -->
+82        <uses-native-library
+82-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:15:9-17:40
+83            android:name="libOpenCL.so"
+83-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:16:13-40
+84            android:required="false" />
+84-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:17:13-37
+85        <uses-native-library
+85-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:15:9-17:40
+86            android:name="libOpenCL-car.so"
+86-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:16:13-40
+87            android:required="false" />
+87-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:17:13-37
+88        <uses-native-library
+88-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:15:9-17:40
+89            android:name="libOpenCL-pixel.so"
+89-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:16:13-40
+90            android:required="false" />
+90-->[com.google.mediapipe:tasks-genai:0.10.28] /Users/patrickfan/.gradle/caches/8.12/transforms/217744956fea6b11ad7d2ae4de08ee5e/transformed/tasks-genai-0.10.28/AndroidManifest.xml:17:13-37
+91
+92        <receiver
+92-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:34:9-52:20
+93            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+93-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:35:13-76
+94            android:directBootAware="false"
+94-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:36:13-44
+95            android:enabled="true"
+95-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:37:13-35
+96            android:exported="true"
+96-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:38:13-36
+97            android:permission="android.permission.DUMP" >
+97-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:39:13-57
+98            <intent-filter>
+98-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:40:13-42:29
+99                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+99-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:41:17-91
+99-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:41:25-88
+100            </intent-filter>
+101            <intent-filter>
+101-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:43:13-45:29
+102                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+102-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:44:17-85
+102-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:44:25-82
+103            </intent-filter>
+104            <intent-filter>
+104-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:46:13-48:29
+105                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+105-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:47:17-88
+105-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:47:25-85
+106            </intent-filter>
+107            <intent-filter>
+107-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:49:13-51:29
+108                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+108-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:50:17-95
+108-->[androidx.profileinstaller:profileinstaller:1.4.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6af30e3b1bc9362b2f105f5407c22516/transformed/profileinstaller-1.4.0/AndroidManifest.xml:50:25-92
+109            </intent-filter>
+110        </receiver>
+111
+112        <service
+112-->[com.google.android.datatransport:transport-backend-cct:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6bb4570c2109b5b5521ce97b8423b5fa/transformed/transport-backend-cct-3.1.0/AndroidManifest.xml:29:9-35:19
+113            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+113-->[com.google.android.datatransport:transport-backend-cct:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6bb4570c2109b5b5521ce97b8423b5fa/transformed/transport-backend-cct-3.1.0/AndroidManifest.xml:30:13-103
+114            android:exported="false" >
+114-->[com.google.android.datatransport:transport-backend-cct:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6bb4570c2109b5b5521ce97b8423b5fa/transformed/transport-backend-cct-3.1.0/AndroidManifest.xml:31:13-37
+115            <meta-data
+115-->[com.google.android.datatransport:transport-backend-cct:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6bb4570c2109b5b5521ce97b8423b5fa/transformed/transport-backend-cct-3.1.0/AndroidManifest.xml:32:13-34:39
+116                android:name="backend:com.google.android.datatransport.cct.CctBackendFactory"
+116-->[com.google.android.datatransport:transport-backend-cct:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6bb4570c2109b5b5521ce97b8423b5fa/transformed/transport-backend-cct-3.1.0/AndroidManifest.xml:33:17-94
+117                android:value="cct" />
+117-->[com.google.android.datatransport:transport-backend-cct:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/6bb4570c2109b5b5521ce97b8423b5fa/transformed/transport-backend-cct-3.1.0/AndroidManifest.xml:34:17-36
+118        </service>
+119        <service
+119-->[com.google.android.datatransport:transport-runtime:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/70df596d106347375af214902d926ff0/transformed/transport-runtime-3.1.0/AndroidManifest.xml:26:9-30:19
+120            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+120-->[com.google.android.datatransport:transport-runtime:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/70df596d106347375af214902d926ff0/transformed/transport-runtime-3.1.0/AndroidManifest.xml:27:13-117
+121            android:exported="false"
+121-->[com.google.android.datatransport:transport-runtime:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/70df596d106347375af214902d926ff0/transformed/transport-runtime-3.1.0/AndroidManifest.xml:28:13-37
+122            android:permission="android.permission.BIND_JOB_SERVICE" >
+122-->[com.google.android.datatransport:transport-runtime:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/70df596d106347375af214902d926ff0/transformed/transport-runtime-3.1.0/AndroidManifest.xml:29:13-69
+123        </service>
+124
+125        <receiver
+125-->[com.google.android.datatransport:transport-runtime:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/70df596d106347375af214902d926ff0/transformed/transport-runtime-3.1.0/AndroidManifest.xml:32:9-34:40
+126            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+126-->[com.google.android.datatransport:transport-runtime:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/70df596d106347375af214902d926ff0/transformed/transport-runtime-3.1.0/AndroidManifest.xml:33:13-132
+127            android:exported="false" />
+127-->[com.google.android.datatransport:transport-runtime:3.1.0] /Users/patrickfan/.gradle/caches/8.12/transforms/70df596d106347375af214902d926ff0/transformed/transport-runtime-3.1.0/AndroidManifest.xml:34:13-37
+128    </application>
+129
+130</manifest>

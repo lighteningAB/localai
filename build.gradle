@@ -1,0 +1,18 @@
+// Top-level build file. Versions match Aiwidget's android/build.gradle to keep
+// signature-level permission compatibility easy.
+buildscript {
+    ext {
+        buildToolsVersion = "35.0.0"
+        minSdkVersion = 31
+        compileSdkVersion = 36
+        targetSdkVersion = 36
+        ndkVersion = "29.0.14206865"
+        kotlinVersion = "2.1.10"
+        agpVersion = "8.9.1"
+    }
+}
+
+plugins {
+    id 'com.android.application' version "$agpVersion" apply false
+    id 'org.jetbrains.kotlin.android' version "$kotlinVersion" apply false
+}

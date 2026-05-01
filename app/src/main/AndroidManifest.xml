@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- BIND_AI guards the inference service.
+         Dev: protectionLevel="normal" — any app that declares <uses-permission> can bind.
+         Prod: change to "signature" once localai and Aiwidget are signed by the same key. -->
+    <permission
+        android:name="com.nothing.localai.permission.BIND_AI"
+        android:protectionLevel="normal" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".LocalAiApp"
+        android:allowBackup="false"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LocalAi"
+        tools:targetApi="35">
+
+        <activity
+            android:name=".ui.StatusActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".LocalAiService"
+            android:exported="true"
+            android:permission="com.nothing.localai.permission.BIND_AI"
+            android:process=":inference"
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="com.nothing.localai.BIND" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>
