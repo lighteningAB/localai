@@ -61,7 +61,11 @@ class LlmRunner(
             modelPath = modelFile.absolutePath,
             backend = Backend.CPU(),
             visionBackend = if (spec.supportsVision) Backend.GPU() else null,
-            audioBackend = if (spec.supportsAudio) Backend.GPU() else null,
+            // gemma-4-E4B-it.litertlm's audio encoder is CPU-only — Engine.initialize()
+            // throws "Audio backend constraint mismatch. Model requires one of [cpu]
+            // but Audio backend is GPU" if this is GPU. Vision is GPU-capable; audio
+            // isn't (yet). Keep CPU until a future bundle lifts the constraint.
+            audioBackend = if (spec.supportsAudio) Backend.CPU() else null,
         )
         // initialize() can take ~10s for a 3.66 GB .litertlm — caller must be
         // off the main thread. Service binder calls already arrive on a pool
