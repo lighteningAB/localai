@@ -7,7 +7,11 @@ buildscript {
         compileSdkVersion = 36
         targetSdkVersion = 36
         ndkVersion = "29.0.14206865"
-        kotlinVersion = "2.1.10"
+        // 2.3.0 needed: LiteRT-LM 0.11.0 ships Kotlin metadata 2.3.0; the
+        // 2.1.10 compiler only reads metadata up to 2.2.0. Aiwidget can stay
+        // on 2.1.10 — AIDL is generated Java, not Kotlin, so the cross-APK
+        // contract is unaffected by the Kotlin version drift.
+        kotlinVersion = "2.3.0"
         agpVersion = "8.9.1"
     }
 }

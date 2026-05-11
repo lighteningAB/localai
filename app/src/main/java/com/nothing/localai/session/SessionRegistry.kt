@@ -7,9 +7,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * One [ChatSession] per widget sessionId. Bounded with a soft cap to keep KV
- * cache memory under control. With MediaPipe LlmInferenceSession, the
- * underlying engine internally serializes — but we still cap concurrent
- * sessions because each has its own KV cache.
+ * cache memory under control. LiteRT-LM 0.11.0 supports multi-session on one
+ * Engine (since 0.9.0-alpha), but each Conversation still owns its own KV
+ * cache, so the cap still matters on a memory-constrained device.
  */
 class SessionRegistry(
     private val runner: LlmRunner,

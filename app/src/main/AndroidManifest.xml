@@ -25,6 +25,16 @@
         android:theme="@style/Theme.LocalAi"
         tools:targetApi="35">
 
+        <!-- LiteRT-LM GPU backend needs OpenCL; libvndksupport bridges to
+             vendor-partition .so files on some OEM builds. Both are optional
+             (required="false") so the runtime can fall back to CPU. -->
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libvndksupport.so"
+            android:required="false" />
+
         <activity
             android:name=".ui.StatusActivity"
             android:exported="true">
