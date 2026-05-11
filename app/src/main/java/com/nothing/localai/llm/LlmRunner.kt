@@ -22,11 +22,40 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.launch
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "LlmRunner"
 private const val MAX_IMAGES_PER_TURN = 4
+
+/**
+ * Wrap raw PCM16 mono samples in a 44-byte WAV header. `Content.AudioBytes`
+ * runs the bytes through miniaudio, which only recognizes encoded container
+ * formats (WAV/MP3/FLAC/...). Without this wrapper miniaudio errors out with
+ * "Failed to initialize miniaudio decoder, error code: -10" (MA_INVALID_FILE).
+ */
+private fun wrapPcm16MonoAsWav(pcm: ByteArray, sampleRate: Int): ByteArray {
+    val byteRate = sampleRate * 2 // mono, 16-bit
+    val dataSize = pcm.size
+    val bb = ByteBuffer.allocate(44 + dataSize).order(ByteOrder.LITTLE_ENDIAN)
+    bb.put("RIFF".toByteArray(Charsets.US_ASCII))
+    bb.putInt(36 + dataSize)
+    bb.put("WAVE".toByteArray(Charsets.US_ASCII))
+    bb.put("fmt ".toByteArray(Charsets.US_ASCII))
+    bb.putInt(16)              // fmt chunk size
+    bb.putShort(1)             // PCM
+    bb.putShort(1)             // mono
+    bb.putInt(sampleRate)
+    bb.putInt(byteRate)
+    bb.putShort(2)             // block align: 1 ch * 16 bit / 8
+    bb.putShort(16)            // bits per sample
+    bb.put("data".toByteArray(Charsets.US_ASCII))
+    bb.putInt(dataSize)
+    bb.put(pcm)
+    return bb.array()
+}
 
 /**
  * LiteRT-LM 0.11.0 runner — experiment branch chasing Gemma 4 E4B multimodal.
@@ -161,9 +190,10 @@ class ChatSession(
             Log.w(TAG, "[$sessionId] addAudio: expected 16 kHz mono PCM16, got ${sampleRate}Hz — model will likely garbage out")
         }
         try {
-            val bytes = ParcelFileDescriptor.AutoCloseInputStream(pcmFd).use { it.readBytes() }
-            pendingAudio = bytes
-            Log.d(TAG, "[$sessionId] audio staged: ${bytes.size} bytes @ ${sampleRate}Hz PCM16")
+            val pcm = ParcelFileDescriptor.AutoCloseInputStream(pcmFd).use { it.readBytes() }
+            val wav = wrapPcm16MonoAsWav(pcm, sampleRate)
+            pendingAudio = wav
+            Log.d(TAG, "[$sessionId] audio staged: ${pcm.size} bytes PCM16 -> ${wav.size} bytes WAV @ ${sampleRate}Hz")
         } catch (t: Throwable) {
             Log.e(TAG, "[$sessionId] addAudio failed", t)
             runCatching { pcmFd.close() }
