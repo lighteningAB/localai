@@ -6,15 +6,23 @@ import com.nothing.localai.llm.LlmRunner
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * One [ChatSession] per widget sessionId. Bounded with a soft cap to keep KV
- * cache memory under control. LiteRT-LM 0.11.0 supports multi-session on one
- * Engine (since 0.9.0-alpha), but each Conversation still owns its own KV
- * cache, so the cap still matters on a memory-constrained device.
+ * One [ChatSession] per widget sessionId. LiteRT-LM 0.11.0 enforces a hard
+ * limit of one [com.google.ai.edge.litertlm.Conversation] per Engine — the
+ * release-notes claim of "multi-session support" turns out to be CLI-only;
+ * the Android API throws FAILED_PRECONDITION on the second createConversation.
+ *
+ * So this registry enforces a single-active policy: creating a session for a
+ * new sid closes every other live one first. Widgets can still each have
+ * their own ChatSession identity, but only the most-recently-touched one
+ * keeps a live Conversation. KV cache is rebuilt the next time a stale
+ * widget becomes active.
+ *
+ * [maxLive] is retained for API compatibility but pinned to 1 in practice.
  */
 class SessionRegistry(
     private val runner: LlmRunner,
     private val ctx: Context,
-    private val maxLive: Int = 4,
+    @Suppress("unused") private val maxLive: Int = 1,
 ) {
 
     private val sessions = ConcurrentHashMap<String, ChatSession>()
@@ -23,7 +31,13 @@ class SessionRegistry(
         sessions[sessionId]?.let { return it }
         synchronized(sessions) {
             sessions[sessionId]?.let { return it }
-            if (sessions.size >= maxLive) evictOne()
+            // Close every other live session synchronously — LiteRT-LM's
+            // engine refuses createConversation while any Conversation is
+            // still open against it.
+            sessions.entries.toList().forEach { (sid, s) ->
+                sessions.remove(sid)
+                runCatching { s.close() }
+            }
             val s = ChatSession(sessionId, runner, ctx)
             sessions[sessionId] = s
             return s
@@ -45,11 +59,5 @@ class SessionRegistry(
     fun releaseAll() {
         sessions.values.forEach { runCatching { it.close() } }
         sessions.clear()
-    }
-
-    private fun evictOne() {
-        val (id, s) = sessions.entries.firstOrNull() ?: return
-        sessions.remove(id)
-        runCatching { s.close() }
     }
 }
