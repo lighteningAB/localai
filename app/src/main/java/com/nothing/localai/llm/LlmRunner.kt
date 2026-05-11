@@ -36,10 +36,11 @@ private const val MAX_IMAGES_PER_TURN = 4
  * materializes the incoming JPEG PFD to a temp file under cacheDir and deletes
  * after the generate Flow completes.
  *
- * Audio is intentionally not wired in this experiment. Gemma 4 .litertlm
- * bundles support audio per the model card, but the EngineConfig audio backend
- * field isn't covered by the public Android quickstart yet — leaving it for a
- * follow-up so the vision question is isolated.
+ * Audio uses `EngineConfig.audioBackend = Backend.GPU()` (field name confirmed
+ * by javap'ing litertlm-android-0.11.0; not in the public Android quickstart).
+ * [ChatSession.addAudio] reads the incoming PCM16 PFD into memory and feeds it
+ * as `Content.AudioBytes(byte[])` at generate time. Gemma 4's USM encoder
+ * expects 16 kHz mono; a non-16k sampleRate is logged but not rejected.
  */
 class LlmRunner(
     private val ctx: Context,
@@ -60,6 +61,7 @@ class LlmRunner(
             modelPath = modelFile.absolutePath,
             backend = Backend.CPU(),
             visionBackend = if (spec.supportsVision) Backend.GPU() else null,
+            audioBackend = if (spec.supportsAudio) Backend.GPU() else null,
         )
         // initialize() can take ~10s for a 3.66 GB .litertlm — caller must be
         // off the main thread. Service binder calls already arrive on a pool
@@ -103,6 +105,7 @@ class ChatSession(
 ) {
     private var conversation: Conversation = runner.newConversation()
     private val pendingImages = mutableListOf<File>()
+    private var pendingAudio: ByteArray? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Synchronized
@@ -146,12 +149,22 @@ class ChatSession(
 
     @Synchronized
     fun addAudio(pcmFd: ParcelFileDescriptor, sampleRate: Int) {
-        Log.w(TAG, "[$sessionId] addAudio: audio not wired in this experiment; dropping ${sampleRate}Hz PCM")
-        runCatching { pcmFd.close() }
-        throw UnsupportedOperationException(
-            "Audio is not wired in the LiteRT-LM 0.11.0 experiment branch. " +
-                "Vision-only smoke test for Gemma 4 E4B multimodal."
-        )
+        if (!runner.spec.supportsAudio) {
+            Log.w(TAG, "[$sessionId] addAudio on non-audio model; ignored")
+            pcmFd.close(); return
+        }
+        if (sampleRate != 16_000) {
+            Log.w(TAG, "[$sessionId] addAudio: expected 16 kHz mono PCM16, got ${sampleRate}Hz — model will likely garbage out")
+        }
+        try {
+            val bytes = ParcelFileDescriptor.AutoCloseInputStream(pcmFd).use { it.readBytes() }
+            pendingAudio = bytes
+            Log.d(TAG, "[$sessionId] audio staged: ${bytes.size} bytes @ ${sampleRate}Hz PCM16")
+        } catch (t: Throwable) {
+            Log.e(TAG, "[$sessionId] addAudio failed", t)
+            runCatching { pcmFd.close() }
+            throw t
+        }
     }
 
     fun generate(requestId: String, prompt: String, cb: ITokenCallback) {
@@ -161,10 +174,12 @@ class ChatSession(
         synchronized(this) {
             val ps = mutableListOf<Content>()
             pendingImages.forEach { ps += Content.ImageFile(it.absolutePath) }
+            pendingAudio?.let { ps += Content.AudioBytes(it) }
             if (prompt.isNotEmpty()) ps += Content.Text(prompt)
             parts = ps
             toCleanup = pendingImages.toList()
             pendingImages.clear()
+            pendingAudio = null
         }
 
         val job = scope.launch {
@@ -202,6 +217,7 @@ class ChatSession(
     private fun clearPending() {
         pendingImages.forEach { runCatching { it.delete() } }
         pendingImages.clear()
+        pendingAudio = null
     }
 
     private inline fun safe(block: () -> Unit) {
