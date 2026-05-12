@@ -28,7 +28,10 @@ class LocalAiService : LifecycleService() {
     private val downloader by lazy { LlmDownloader(applicationContext) }
     private val runner by lazy { LlmRunner(applicationContext, downloader) }
     private val sessions by lazy {
-        SessionRegistry(runner, applicationContext, maxLive = 4)
+        // LiteRT-LM 0.11.0 caps the engine at one live Conversation; the
+        // registry enforces single-active anyway, but pass 1 explicitly so
+        // the parameter doesn't lie.
+        SessionRegistry(runner, applicationContext, maxLive = 1)
     }
 
     private var activeRequests = 0

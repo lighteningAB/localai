@@ -11,12 +11,13 @@ object ModelId {
     const val GEMMA4_E2B_INT4 = "gemma4-e2b-it-int4"
     const val GEMMA4_E4B_INT4 = "gemma4-e4b-it-int4"
 
-    // Reverted to Gemma 3n on MediaPipe after confirming Gemma 4's multimodal
-    // path on LiteRT-LM 0.10.2 is broken on Snapdragon 8s Gen 4 (5+ different
-    // SIGSEGV reproductions, identical liblitertlm_jni.so offsets). Gemma 3n
-    // is MediaPipe's native multimodal target and what Google's actual
-    // Android samples ship with.
-    const val DEFAULT = GEMMA3N_E4B_INT4
+    // Experiment branch: re-attempt Gemma 4 E4B on LiteRT-LM 0.11.0 (May 2026).
+    // 0.10.2 SIGSEGV'd deterministically on the multimodal vision path on
+    // Snapdragon 8s Gen 4. 0.11.0's changelog does not call out a vision fix,
+    // but added Gemma 4 MTP (>2x GPU decode) — worth re-testing before
+    // committing to either runtime for production. Flip back to
+    // GEMMA3N_E4B_INT4 if vision crashes again.
+    const val DEFAULT = GEMMA4_E4B_INT4
 }
 
 data class ModelStatus(

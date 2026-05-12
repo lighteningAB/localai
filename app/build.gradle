@@ -67,11 +67,13 @@ dependencies {
 
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
 
-    // MediaPipe GenAI — Gemma 3n multimodal native runtime.
-    // We were on LiteRT-LM 0.10.2 briefly to chase Gemma 4; the runtime's
-    // multimodal pipeline isn't ready on Snapdragon 8s Gen 4. Reverted.
-    implementation 'com.google.mediapipe:tasks-genai:0.10.29'
-    implementation 'com.google.mediapipe:tasks-vision:0.10.29'
+    // LiteRT-LM 0.11.0 — experiment branch. Swapping back from MediaPipe
+    // tasks-genai to chase Gemma 4 E4B multimodal. 0.11.0 adds Gemma 4 MTP
+    // (>2x faster GPU decode). No public NPU-specialized .litertlm exists for
+    // SM8735 (Snapdragon 8s Gen 4) yet, so we run the generic bundle on the
+    // GPU backend — same accel tier as MediaPipe, isolating the question to
+    // "does the multimodal vision path SIGSEGV like 0.10.2 did?"
+    implementation 'com.google.ai.edge.litertlm:litertlm-android:0.11.0'
     // OkHttp for model download
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 }
