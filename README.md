@@ -4,11 +4,10 @@ Sibling APK that hosts on-device models and exposes them to Aiwidget over AIDL.
 
 ## Status
 
-> **Branch `experiment/litertlm-0.11.0-gemma4-e4b`** — validated end-to-end on
-> Snapdragon 8s Gen 4 (SM8735). All three modalities working on Gemma 4 E4B:
-> text + image (GPU/OpenCL) + audio (CPU/XNNPACK, PCM16 wrapped in WAV). The
-> 0.10.2 vision SIGSEGV that drove the previous revert is gone in 0.11.0.
-> Ready to fold back into `main` when convenient.
+Validated end-to-end on Snapdragon 8s Gen 4 (SM8735) and merged to `main`. All
+three modalities working on Gemma 4 E4B: text + image (GPU/OpenCL) + audio
+(CPU/XNNPACK, PCM16 wrapped in WAV). The 0.10.2 vision SIGSEGV that drove the
+previous revert is gone in 0.11.0.
 
 Default model: **Gemma 4 E4B IT (`.litertlm`, ~3.66 GiB)** — multimodal text +
 image + audio. Gemma 3n E2B/E4B `.task` specs are still in the catalog but the
