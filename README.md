@@ -16,6 +16,45 @@ end-to-end (text encode + UNet diffusion + VAE decode + PNG); widget round-trip
 See the [Image generation](#image-generation-stable-diffusion-15-on-hexagon-npu)
 section.
 
+## Process model
+
+LocalAi is a standalone APK that hosts every model in a separate
+`:inference` process and exposes a single bound `Service` over AIDL. Consumer
+apps bind to it, never load the models themselves, and never see the
+underlying runtime (LiteRT-LM, QNN, MNN). The contract is the AIDL surface;
+everything else is implementation detail.
+
+```mermaid
+flowchart LR
+    subgraph Consumer["Consumer app process"]
+        AppCode["App code<br/>(activity, widget, foreground service)"]
+        AIDLProxy["ILocalAiService<br/>(generated Java stub)"]
+    end
+
+    subgraph LocalAi["com.nothing.localai :inference process"]
+        Service["LocalAiService<br/>(foreground notification)"]
+        Llm["LlmRunner<br/>(LiteRT-LM 0.11.0 / Gemma 4)"]
+        ImgGen["ImageGenRunner<br/>(SD 1.5 native pipeline)"]
+        Native["libimagegen.so<br/>+ liblitertlm_jni.so"]
+    end
+
+    subgraph Compute["Hardware backends"]
+        CPU["XNNPACK CPU<br/>(decoder, audio)"]
+        GPU["Adreno OpenCL<br/>(vision, CLIP)"]
+        NPU["Hexagon V73 HTP<br/>(UNet, VAE)"]
+    end
+
+    AppCode <-->|"bindService<br/>com.nothing.localai.BIND"| AIDLProxy
+    AIDLProxy <-->|"AIDL binder<br/>(text/image/audio/imagegen)"| Service
+    Service --> Llm
+    Service --> ImgGen
+    Llm --> Native
+    ImgGen --> Native
+    Native --> CPU
+    Native --> GPU
+    Native --> NPU
+```
+
 Default model: **Gemma 4 E4B IT (`.litertlm`, ~3.66 GiB)** — multimodal text +
 image + audio. Gemma 3n E2B/E4B `.task` specs are still in the catalog but the
 runner only loads `.litertlm` now; selecting a `.task` model id will fail at
@@ -130,6 +169,168 @@ For `signature`-level binding to work, this APK and Aiwidget must be signed
 with the same key. Debug builds share the Android debug key automatically.
 For dev convenience, `BIND_AI` is currently `protectionLevel="normal"`.
 
+## Using LocalAi from another app
+
+LocalAi exposes a single bound `Service`. Any app on the device can use it
+by (1) installing the LocalAi APK once, (2) copying the AIDL contract, and
+(3) binding with the right permission + intent action.
+
+### 1. Install the APK
+
+```bash
+# Build + install the debug APK directly from this repo
+./gradlew :app:installDebug
+
+# Or push a prebuilt APK to a fresh device
+adb install -r app-debug.apk
+
+# Confirm the service is registered
+adb shell pm list packages | grep nothing.localai
+adb shell dumpsys package com.nothing.localai.debug | grep -A 1 "Service Resolver"
+```
+
+Then push at least one model bundle so the service has something to serve.
+See [Model setup (Gemma 4 E4B IT)](#model-setup-gemma-4-e4b-it-litertlm) for
+the LLM and [Setting up the bundle](#setting-up-the-bundle) for SD 1.5.
+
+### 2. Mirror the AIDL contract
+
+Every consumer copies these four files **byte-identical** into its own
+`src/main/aidl/com/nothing/localai/`:
+
+```
+ILocalAiService.aidl
+ITokenCallback.aidl
+IModelStatusCallback.aidl
+IImageGenCallback.aidl
+```
+
+Keeping them byte-identical (same package, same parameter order) is what
+makes the binder marshalling agree across processes — see the comments in
+each file. Methods may only be **appended** at the end of
+`ILocalAiService.aidl`; reordering or removing breaks binary compatibility
+with already-installed consumers.
+
+### 3. Declare permission + visibility, bind, call
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as Consumer app
+    participant PM as Android PackageManager
+    participant LA as LocalAi :inference
+
+    App->>PM: bindService(Intent("com.nothing.localai.BIND")<br/>.setPackage("com.nothing.localai.debug"))
+    PM->>LA: spawn :inference process (cold)
+    LA-->>App: onServiceConnected(IBinder)
+    App->>App: ILocalAiService.Stub.asInterface(binder)
+    App->>LA: getApiVersion()
+    LA-->>App: 1
+    App->>LA: ensureModel(modelId, IModelStatusCallback)
+    LA-->>App: cb.onReady() (or cb.onProgress / onError)
+    App->>LA: createSession(sid) then generate(sid, prompt, ITokenCallback)
+    LA-->>App: cb.onToken(rid, "Hello")  [streaming]
+    LA-->>App: cb.onComplete(rid)
+    App->>LA: generateImage("a cat", 20, seed, IImageGenCallback)
+    LA-->>App: cb.onResult(rid, pngPfd, 512, 512)
+    App->>App: BitmapFactory.decodeStream(<br/>FileInputStream(pngPfd.fileDescriptor))
+```
+
+**Consumer `AndroidManifest.xml`:**
+
+```xml
+<!-- Required even with protectionLevel="normal" — silently ignored on grant
+     but blocks the bind without it. -->
+<uses-permission android:name="com.nothing.localai.permission.BIND_AI" />
+
+<!-- Android 11+: package visibility. Without this, the consumer cannot
+     resolve com.nothing.localai when calling bindService. -->
+<queries>
+    <package android:name="com.nothing.localai" />
+    <package android:name="com.nothing.localai.debug" />
+</queries>
+```
+
+**Consumer Kotlin (bind + call):**
+
+```kotlin
+private var service: ILocalAiService? = null
+
+private val conn = object : ServiceConnection {
+    override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+        service = ILocalAiService.Stub.asInterface(binder)
+        // Always sanity-check the API version before calling new methods.
+        // Bump the constant in ILocalAiService.aidl when new methods land.
+        val v = service?.apiVersion ?: 0
+        if (v < 1) { /* unsupported — unbind */ }
+    }
+    override fun onServiceDisconnected(name: ComponentName) { service = null }
+}
+
+fun bind(ctx: Context) {
+    val intent = Intent("com.nothing.localai.BIND").apply {
+        // Debug builds use the .debug suffix; release uses no suffix.
+        setPackage("com.nothing.localai.debug")
+    }
+    ctx.bindService(intent, conn, Context.BIND_AUTO_CREATE)
+}
+
+fun streamText(prompt: String) {
+    val sid = "s-${UUID.randomUUID()}"
+    service?.createSession(sid)
+    service?.generate(sid, prompt, object : ITokenCallback.Stub() {
+        override fun onToken(rid: String, token: String) { /* append to UI */ }
+        override fun onComplete(rid: String) { /* finalize */ }
+        override fun onError(rid: String, code: String, msg: String) { /* … */ }
+    })
+}
+
+fun generateImage(prompt: String, iters: Int = 20) {
+    service?.generateImage(prompt, iters, /*seed=*/ 42L,
+        object : IImageGenCallback.Stub() {
+            override fun onStep(rid: String, step: Int, totalSteps: Int) {}
+            override fun onResult(rid: String, pngFd: ParcelFileDescriptor,
+                                  width: Int, height: Int) {
+                val bmp = BitmapFactory.decodeStream(
+                    ParcelFileDescriptor.AutoCloseInputStream(pngFd))
+                // post to UI thread, recycle pngFd is auto-handled
+            }
+            override fun onError(rid: String, code: String, msg: String) {}
+        })
+}
+```
+
+### 4. Threading and lifecycle gotchas
+
+- **The service runs in `:inference`, a separate process.** All AIDL calls
+  cross a binder boundary; arguments are marshalled. Don't pass live
+  `Bitmap` / `InputStream` — wrap binary data in a `ParcelFileDescriptor`.
+- **Callbacks fire on a binder thread**, not the caller's thread. Marshal
+  to the UI thread (`Handler` / `Dispatchers.Main`) before touching views.
+- **`createSession` is single-active per process.** LiteRT-LM 0.11.0
+  enforces one live `Conversation` per `Engine`; LocalAi closes prior
+  sessions automatically. Multiple consumer apps share that one slot — the
+  most recent caller "wins" and earlier callers rebuild KV cache on their
+  next turn.
+- **Cancel cleanup is the caller's job.** Hold the returned `requestId` and
+  call `cancel(requestId)` / `cancelImageGen(requestId)` when the user
+  navigates away; otherwise the service will keep streaming tokens and
+  burning the NPU until completion.
+- **Multimodal input.** Use `addImage(sid, jpegFd)` / `addAudio(sid, pcmFd,
+  rate)` *before* the next `generate(sid, …)` call on the same session.
+  Max 4 images per turn. Audio is 16 kHz mono PCM16; other rates are
+  logged but not rejected.
+- **Image generation never reuses a session.** It's stateless from the
+  caller's perspective — each `generateImage` is a fresh diffusion run.
+
+### 5. Production signing
+
+For shipping to end users, change `BIND_AI` from `protectionLevel="normal"`
+to `"signature"` in LocalAi's manifest. Then every consumer app must be
+signed with the **same release key** as LocalAi, or the bind silently
+fails. Debug builds share the Android debug key automatically and don't
+need this.
+
 ## Hardware notes
 
 LiteRT-LM 0.11.0 runs the text decoder on XNNPACK CPU, the vision encoder
@@ -160,41 +361,46 @@ abandoned.
 
 ### Architecture
 
-```
-Aiwidget                  LocalAi process                 Hexagon V73
-─────────                 ──────────────                  ───────────
-image-gen-1     ──AIDL──▶ ILocalAiService.generateImage
-                          │
-                          ▼
-                          ImageGenRunner.generate
-                          │  (coroutine, IO dispatcher)
-                          ▼
-                          NativeImageGen.nativeRunDiffusionPng
-                          │
-                          ▼
-                          libimagegen.so
-                          │   ┌──────────────────────┐
-                          │   │ Tokenizer (CLIP BPE) │── CPU
-                          │   ├──────────────────────┤
-                          │   │ MnnSession (CLIP)    │── Adreno GPU (OpenCL)
-                          │   ├──────────────────────┤
-                          │   │ QnnSession (UNet)    │── Hexagon NPU
-                          │   │   - DPMSolver++      │     (QNN HTP, V73)
-                          │   │   - CFG (scale=7.5)  │
-                          │   ├──────────────────────┤
-                          │   │ QnnSession (VAE dec) │── Hexagon NPU
-                          │   │ stb_image_write      │── CPU (PNG encode)
-                          │   └──────────────────────┘
-                          │
-                          ▼ ParcelFileDescriptor.createPipe()
-                          IImageGenCallback.onResult(rid, pfd, 512, 512)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as image-gen-1<br/>widget
+    participant B as LocalAiBridge<br/>(consumer side)
+    participant S as LocalAiService<br/>(AIDL stub)
+    participant R as ImageGenRunner<br/>(Kotlin)
+    participant N as libimagegen.so
+    participant H as Hexagon V73<br/>(QNN HTP)
+    participant G as Adreno GPU<br/>(OpenCL)
+
+    W->>B: generateImage("a cat", iters=8, seed)
+    B->>S: AIDL generateImage(prompt, iters, seed, cb)
+    S->>R: generate(prompt, iters, seed, cb)
+    R->>N: nativeRunDiffusionPng(...)
+    N->>N: Tokenizer (CLIP BPE)
+    N->>G: MnnSession (CLIP text encoder)<br/>cond + uncond → 2 × [1,77,768]
+    N->>H: QnnSession (UNet, instantiate from unet.bin)
+    loop iters × 2 (CFG: cond + uncond)
+        N->>H: graphExecute(latent, t, emb)
+        H-->>N: epsilon prediction
+        N->>N: DPMSolver++ step
+    end
+    N->>N: free UNet HTP context
+    N->>H: QnnSession (VAE, instantiate from vae_decoder.bin)
+    N->>H: graphExecute(latent × 1/0.18215)
+    H-->>N: RGB [-1,1] (NCHW or NHWC)
+    N->>N: clamp + denorm + stb PNG encode
+    N-->>R: byte[] (PNG, ~565 KB)
+    R->>R: ParcelFileDescriptor.createPipe()
+    R-->>S: cb.onResult(rid, readEnd, 512, 512)
+    S-->>B: IImageGenCallback.onResult(rid, pfd, w, h)
+    B-->>W: decoded Bitmap
 ```
 
-UNet and VAE QnnSessions are sequential, not concurrent — the UNet session is
-destroyed after the diffusion loop completes so the VAE has a clean HTP
-context to load into. Memory headroom: UNet binary ~840 MB, VAE ~57 MB, CLIP
-~250 MB. With Gemma 4 E4B also resident (~3.7 GB) we fit comfortably on a
-12 GB device.
+UNet and VAE `QnnSession`s are sequential, not concurrent — the UNet session
+is destroyed after the diffusion loop completes so the VAE has a clean HTP
+context to load into. Memory headroom: UNet binary ~840 MB, VAE ~57 MB,
+CLIP ~250 MB. With Gemma 4 E4B also resident (~3.7 GB) the device fits
+comfortably with 12 GB RAM headroom.
 
 ### Native pipeline (`app/src/main/cpp/`)
 
