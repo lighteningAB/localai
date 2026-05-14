@@ -6,6 +6,7 @@ package com.nothing.localai;
 
 import com.nothing.localai.ITokenCallback;
 import com.nothing.localai.IModelStatusCallback;
+import com.nothing.localai.IImageGenCallback;
 import android.os.ParcelFileDescriptor;
 
 interface ILocalAiService {
@@ -34,4 +35,11 @@ interface ILocalAiService {
     // ===== Multimodal LLM input (Gemma 3n) =====
     void addImage(String sessionId, in ParcelFileDescriptor jpegFd);
     void addAudio(String sessionId, in ParcelFileDescriptor pcmFd, int sampleRate);
+
+    // ===== Image generation (MediaPipe Image Generator) =====
+    // Diffusion runs against a separate model directory (MobileDiffusion or quantized SD v1.5
+    // converted via image_generator_converter). Independent of the LLM session pool: no KV
+    // cache to preserve. Returns a requestId for cancel().
+    String generateImage(String prompt, int iterations, long seed, IImageGenCallback cb);
+    void cancelImageGen(String requestId);
 }

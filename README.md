@@ -5,9 +5,16 @@ Sibling APK that hosts on-device models and exposes them to Aiwidget over AIDL.
 ## Status
 
 Validated end-to-end on Snapdragon 8s Gen 4 (SM8735) and merged to `main`. All
-three modalities working on Gemma 4 E4B: text + image (GPU/OpenCL) + audio
+three Gemma 4 E4B modalities working: text + image (GPU/OpenCL) + audio
 (CPU/XNNPACK, PCM16 wrapped in WAV). The 0.10.2 vision SIGSEGV that drove the
 previous revert is gone in 0.11.0.
+
+**On-device Stable Diffusion 1.5** also live, running on the Hexagon V73 NPU
+via Qualcomm QAIRT/QNN. 8-step "a cat" generates a recognizable 512×512 image
+end-to-end (text encode + UNet diffusion + VAE decode + PNG); widget round-trip
+(`image-gen-1` → AIDL → `ImageGenRunner` → `libimagegen.so` → PFD pipe) works.
+See the [Image generation](#image-generation-stable-diffusion-15-on-hexagon-npu)
+section.
 
 Default model: **Gemma 4 E4B IT (`.litertlm`, ~3.66 GiB)** — multimodal text +
 image + audio. Gemma 3n E2B/E4B `.task` specs are still in the catalog but the
@@ -136,3 +143,184 @@ throughput.
 
 If/when Google ships a `sm8735` bundle, swap the filename in `ModelCatalog`
 and the runner will pick up NPU automatically — no other changes needed.
+
+## Image generation (Stable Diffusion 1.5 on Hexagon NPU)
+
+Independent of the Gemma 4 multimodal LLM, LocalAi includes an on-device SD 1.5
+diffusion pipeline running on the Hexagon NPU via Qualcomm QAIRT/QNN. End-to-end:
+text prompt → tokens → CLIP text encoder (MNN, Adreno GPU via OpenCL) → UNet
+diffusion loop with classifier-free guidance (QNN HTP, V73) → VAE decoder
+(QNN HTP) → PNG. No external services, no LiteRT involvement; only the AIDL
+surface and foreground notification policy are shared with the LLM path.
+
+This is "Plan B": clean-room native C++ consuming xororz HF pre-converted SD
+QNN bundles. See `IMAGE-GEN-PLAN.md` for the phase plan and `KNOWN-ISSUES.md`
+for why MediaPipe Image Generator (Plan A) and LiteRT/AI Hub (Plan A2) were
+abandoned.
+
+### Architecture
+
+```
+Aiwidget                  LocalAi process                 Hexagon V73
+─────────                 ──────────────                  ───────────
+image-gen-1     ──AIDL──▶ ILocalAiService.generateImage
+                          │
+                          ▼
+                          ImageGenRunner.generate
+                          │  (coroutine, IO dispatcher)
+                          ▼
+                          NativeImageGen.nativeRunDiffusionPng
+                          │
+                          ▼
+                          libimagegen.so
+                          │   ┌──────────────────────┐
+                          │   │ Tokenizer (CLIP BPE) │── CPU
+                          │   ├──────────────────────┤
+                          │   │ MnnSession (CLIP)    │── Adreno GPU (OpenCL)
+                          │   ├──────────────────────┤
+                          │   │ QnnSession (UNet)    │── Hexagon NPU
+                          │   │   - DPMSolver++      │     (QNN HTP, V73)
+                          │   │   - CFG (scale=7.5)  │
+                          │   ├──────────────────────┤
+                          │   │ QnnSession (VAE dec) │── Hexagon NPU
+                          │   │ stb_image_write      │── CPU (PNG encode)
+                          │   └──────────────────────┘
+                          │
+                          ▼ ParcelFileDescriptor.createPipe()
+                          IImageGenCallback.onResult(rid, pfd, 512, 512)
+```
+
+UNet and VAE QnnSessions are sequential, not concurrent — the UNet session is
+destroyed after the diffusion loop completes so the VAE has a clean HTP
+context to load into. Memory headroom: UNet binary ~840 MB, VAE ~57 MB, CLIP
+~250 MB. With Gemma 4 E4B also resident (~3.7 GB) we fit comfortably on a
+12 GB device.
+
+### Native pipeline (`app/src/main/cpp/`)
+
+| File | Role |
+|------|------|
+| `imagegen.cpp` | JNI surface — `nativePing`, `nativeSetAdspLibraryPath`, `nativeInspectQnnBinary`, `nativeRunMnnTextEncode`, `nativeRunDiffusion`, `nativeRunDiffusionPng` |
+| `qnn_session.{hpp,cpp}` | RAII wrapper around a single QNN HTP context: `dlopen` `libQnnHtp.so` / `libQnnSystem.so`, version-tolerant metadata extraction, unsigned PD opt-in, graph execute |
+| `mnn_session.{hpp,cpp}` | Alibaba MNN runtime for the `clip_v2.mnn` text encoder (OpenCL preferred, CPU fallback) |
+| `tokenizer.{hpp,cpp}` | CLIP BPE tokenizer reading the HF `tokenizer.json` spec |
+| `bundle_loader.{hpp,cpp}` | xororz HF bundle manifest validation |
+| `scheduler.{hpp,cpp}` | Pure-C++ DPM-Solver++ (2nd-order multistep, midpoint solver). Defaults to SD 1.5 betas (β_start=0.00085, β_end=0.012, scaled-linear). |
+| `diffusion.{hpp,cpp}` | Orchestrates: tokenize → CLIP forward ×2 (cond + uncond) → UNet loop (iters × 2 for CFG) → VAE decode → uint8 RGB → PNG. Detects NCHW vs NHWC at the VAE boundary from graph metadata. |
+| `png_encode.cpp` | stb_image_write isolation TU (single PNG writer compile unit) |
+| `3rdparty/MNN` | Submodule, built static into `libimagegen.so` (OpenCL + ARM82, no KleidiAI) |
+| `3rdparty/nlohmann/` | Header-only JSON for the tokenizer |
+| `3rdparty/stb/` | Public-domain `stb_image_write.h` v1.16 |
+
+### SM8735 gotchas (resolved)
+
+These caused multi-hour debugging sessions; documenting so future-you
+doesn't repeat them.
+
+1. **Unsigned PD** — FastRPC defaults to *signed* process domain on SM8735,
+   which a debug-signed (untrusted) app cannot offload to. The kernel logs
+   `Untrusted application trying to offload to signed PD`. Resolved by
+   explicit `QNN_HTP_DEVICE_CONFIG_OPTION_SIGNEDPD` /
+   `useSignedProcessDomain=false` in `qnn_session.cpp::instantiate`.
+2. **`<uses-native-library>`** — `libQnnHtp.so` opens `libcdsprpc.so` /
+   `libadsprpc.so` / `libsdsprpc.so` (vendor FastRPC libs). On minSdk 31+
+   the app linker namespace doesn't include them by default; the manifest
+   must declare them via `<uses-native-library required="false">`. Without
+   this, `dlopen` succeeds but the FastRPC handshake fails opaquely.
+3. **`ADSP_LIBRARY_PATH`** — FastRPC loads the per-Hexagon-revision Skel
+   (`libQnnHtpV73Skel.so` for V73) by *filesystem* path, not via `dlopen`.
+   Point it at `applicationInfo.nativeLibraryDir` *before* the first
+   `QnnContext_createFromBinary` call. `useLegacyPackaging=true` is also
+   required so AGP extracts the Skel onto the filesystem rather than
+   mmapping it inside the APK.
+4. **ufp16 quant on the boundary** — xororz exports UNet I/O as
+   `QNN_DATATYPE_UFIXED_POINT_16` with per-tensor scale/offset.
+   `packFloats` / `unpackFloats` honor the
+   `QnnTensorInfo::quantScale` / `quantOffset` extracted from `binaryInfo`.
+   Both directions: `q = round(f/scale) - offset`, `f = (q + offset) * scale`.
+5. **VAE latent scale** — SD 1.5 encodes with `latent * 0.18215`. Before
+   passing UNet latents to the VAE decoder, multiply by `1.0 / 0.18215`.
+6. **Layout detection** — xororz UNet and VAE both export with consistent
+   layout, but it can be either NCHW or NHWC across bundles. `diffusion.cpp`
+   classifies the VAE output at runtime by checking which axis carries the
+   channel count, and transposes to HWC interleaved for stb's PNG writer.
+
+### Setting up the bundle
+
+Validated against the `xororz/sd-qnn` HuggingFace repository (e.g.
+`AbsoluteReality_qnn2.28_8gen2.zip`). The xororz bundles target Hexagon V75
+(8 Gen 2) but the context binaries also load on V73 (8s Gen 4 / 8 Gen 3) —
+the HTP instruction set is forward-compatible for these operators.
+
+```bash
+# 1. Download a bundle (HuggingFace account required)
+curl -L -o /tmp/bundle.zip \
+  https://huggingface.co/xororz/sd-qnn/resolve/main/AbsoluteReality_qnn2.28_8gen2.zip
+unzip /tmp/bundle.zip -d /tmp/bundle
+
+# 2. Push to device — the script strips the bundle's
+#    output_512/qnn_models_8gen2/ wrapper and atomically swaps it in.
+./scripts/push-diffusion-bundle.sh /tmp/bundle/output_512/qnn_models_8gen2
+```
+
+The bundle ships `tokenizer.json`, `clip_v2.mnn`, `pos_emb.bin`,
+`token_emb.bin`, `unet.bin` (~840 MB), `vae_encoder.bin`, and
+`vae_decoder.bin` (~57 MB).
+
+### Smoke test
+
+`LocalAiApp.onCreate` runs a boot probe (background thread) that drives the
+full pipeline at 8 inference steps with prompt "a cat" and writes the result
+to `filesDir/sd-debug.png`. To inspect:
+
+```bash
+adb shell run-as com.nothing.localai.debug cat files/sd-debug.png > /tmp/sd-debug.png
+open /tmp/sd-debug.png
+```
+
+Expected logcat (cold load with the bundle present):
+
+```
+imagegen: text encode done (NNN ms)
+diffusion: step 1/8 (t=...) latents[min=... max=...]
+...
+diffusion: step 8/8 ...
+imagegen: vae NCHW 512x512 range[-1.5,1.3] pngBytes=565622 timing: load=380ms exec=720ms total=1260ms
+LocalAiApp: diffusion-to-png probe OK: pngBytes=565622 → .../files/sd-debug.png
+```
+
+End-to-end wall time (cold): ~30 s for 8 iters at 512×512 on SM8735. Steady-
+state per iter is dominated by 2× UNet passes (cond + uncond CFG) at ~415 ms
+each. 20+ iters produce noticeably crisper output if you can spend the time.
+
+### Widget path
+
+The `image-gen-1` testwidget calls `LocalAiBridge.generateImage`, which
+marshals through the AIDL surface to `ImageGenRunner.generate`. The PNG
+bytes return via a `ParcelFileDescriptor.createPipe()` — the write end is
+closed after the byte array drains; the read end crosses the binder
+boundary and is decoded back to a bitmap on the widget side.
+
+`onStep` AIDL events are not wired yet — the first stage delivers a single
+`onResult` once the PNG is ready. Per-step progress UI requires a
+`NativeCallback` JNI bridge from the diffusion loop, which is a follow-up.
+
+### Build dependencies (QAIRT / QNN SDK)
+
+The native library only builds with `IMAGEGEN_HAS_QNN` defined, which
+Gradle flips on if `QNN_SDK_ROOT` resolves. Precedence: `QNN_SDK_ROOT` env
+var, then `qnn.sdk.root` in `local.properties`. Without it the stub
+implementation reports the missing config cleanly but cannot execute.
+
+```properties
+# local.properties (do not commit)
+qnn.sdk.root=/path/to/qairt/2.46.0.260424
+```
+
+The `stageQnnLibs` Gradle task copies `libQnn*.so` from
+`${QNN_SDK_ROOT}/lib/aarch64-android/` plus the per-Hexagon-revision Skel
+libs from `${QNN_SDK_ROOT}/lib/hexagon-v{68,69,73,75,79,81}/unsigned/` into
+`build/qnn-libs/arm64-v8a/`, which is wired as an extra `jniLibs.srcDirs`
+in `app/build.gradle`. The Skel libs are NOT committed (proprietary, ~50 MB
+each); each developer installs QAIRT locally and points `local.properties`
+at it.

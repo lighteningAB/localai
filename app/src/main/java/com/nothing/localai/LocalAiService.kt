@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.nothing.localai.imagegen.ImageGenRunner
 import com.nothing.localai.llm.LlmDownloader
 import com.nothing.localai.llm.LlmRunner
 import com.nothing.localai.session.SessionRegistry
@@ -33,6 +34,10 @@ class LocalAiService : LifecycleService() {
         // the parameter doesn't lie.
         SessionRegistry(runner, applicationContext, maxLive = 1)
     }
+    // Diffusion runner is independent of the LLM engine. Held lazily so the
+    // ImageGenerator (~seconds to construct, ~1–2 GB resident once loaded)
+    // doesn't materialize until a widget actually asks for an image.
+    private val imageGen by lazy { ImageGenRunner(applicationContext) }
 
     private var activeRequests = 0
 
@@ -45,6 +50,7 @@ class LocalAiService : LifecycleService() {
     override fun onUnbind(intent: Intent?): Boolean {
         Log.d(TAG, "onUnbind")
         sessions.releaseAll()
+        runCatching { imageGen.close() }
         return super.onUnbind(intent)
     }
 
@@ -170,6 +176,46 @@ class LocalAiService : LifecycleService() {
 
         override fun speak(text: String) {
             // wired in later TTS phase
+        }
+
+        // ===== Image generation =====
+
+        override fun generateImage(
+            prompt: String,
+            iterations: Int,
+            seed: Long,
+            cb: IImageGenCallback,
+        ): String {
+            beginRequest()
+            // Wrap cb so endRequest() fires when generation completes. ImageGenRunner
+            // launches its own coroutine, so we can't bracket on this binder call.
+            val wrapped = object : IImageGenCallback.Stub() {
+                override fun onStep(rid: String, step: Int, totalSteps: Int) =
+                    cb.onStep(rid, step, totalSteps)
+                override fun onResult(
+                    rid: String,
+                    pngFd: ParcelFileDescriptor,
+                    width: Int,
+                    height: Int,
+                ) {
+                    try { cb.onResult(rid, pngFd, width, height) } finally { endRequest() }
+                }
+                override fun onError(rid: String, code: String, msg: String) {
+                    try { cb.onError(rid, code, msg) } finally { endRequest() }
+                }
+            }
+            return try {
+                imageGen.generate(prompt, iterations, seed, wrapped)
+            } catch (t: Throwable) {
+                Log.e(TAG, "generateImage failed", t)
+                val rid = java.util.UUID.randomUUID().toString()
+                runCatching { wrapped.onError(rid, "GENERATE_FAILED", t.message ?: "unknown") }
+                rid
+            }
+        }
+
+        override fun cancelImageGen(requestId: String) {
+            imageGen.cancel(requestId)
         }
     }
 }

@@ -34,6 +34,21 @@
         <uses-native-library
             android:name="libvndksupport.so"
             android:required="false" />
+        <!-- FastRPC vendor libs that QnnHtp*Stub.so dlopens to dispatch ops
+             onto the Hexagon DSP. Required for image-gen Phase 6 (Plan B
+             QNN path). Listed in /vendor/etc/public.libraries.txt on Sun
+             (SM8735, Hexagon V73) builds, but the app's linker namespace
+             does not include them by default — declaring them here lets
+             the app's classloader resolve them. -->
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libadsprpc.so"
+            android:required="false" />
+        <uses-native-library
+            android:name="libsdsprpc.so"
+            android:required="false" />
 
         <activity
             android:name=".ui.StatusActivity"

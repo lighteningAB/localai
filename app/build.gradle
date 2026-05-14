@@ -3,6 +3,22 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Resolve QAIRT (QNN SDK) install path for the native image-gen build.
+// Precedence: env var QNN_SDK_ROOT, then `qnn.sdk.root` in local.properties.
+// Absent is tolerated through Phase 3; Phase 4+ (QNN runtime) requires it.
+def imagegenQnnSdkRoot = {
+    def envPath = System.getenv('QNN_SDK_ROOT')
+    if (envPath?.trim()) return envPath.trim()
+    def propsFile = rootProject.file('local.properties')
+    if (propsFile.exists()) {
+        def props = new Properties()
+        propsFile.withInputStream { props.load(it) }
+        def fromProps = props.getProperty('qnn.sdk.root')
+        if (fromProps?.trim()) return fromProps.trim()
+    }
+    return ''
+}()
+
 android {
     namespace 'com.nothing.localai'
     compileSdk rootProject.ext.compileSdkVersion
@@ -18,6 +34,29 @@ android {
         // Snapdragon-only at the moment; restrict ABIs to keep APK lean.
         ndk {
             abiFilters 'arm64-v8a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags '-std=c++17 -O3 -fvisibility=hidden'
+                arguments "-DQNN_SDK_ROOT=${imagegenQnnSdkRoot}"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    // Stage QNN runtime libraries under build/ rather than committing them to
+    // src/main/jniLibs (the .so files are proprietary, ~50 MB each). The Gradle
+    // task `stageQnnLibs` below populates this from QAIRT when available.
+    sourceSets {
+        main {
+            jniLibs.srcDirs += "${layout.buildDirectory.get().asFile}/qnn-libs"
         }
     }
 
@@ -45,7 +84,13 @@ android {
 
     packagingOptions {
         jniLibs {
-            useLegacyPackaging false
+            // Legacy packaging extracts native libs to nativeLibraryDir on install
+            // instead of mmap-loading them from inside the APK. Required for QNN
+            // because the FastRPC daemon loads the per-Hexagon-rev Skel onto the
+            // DSP, and the DSP-side loader needs a real filesystem path (no APK
+            // zip access from the DSP). ADSP_LIBRARY_PATH is then pointed at
+            // nativeLibraryDir in JNI before any QNN context call.
+            useLegacyPackaging true
         }
         resources {
             excludes += [
@@ -74,6 +119,62 @@ dependencies {
     // GPU backend — same accel tier as MediaPipe, isolating the question to
     // "does the multimodal vision path SIGSEGV like 0.10.2 did?"
     implementation 'com.google.ai.edge.litertlm:litertlm-android:0.11.0'
+
+    // LiteRT (TFLite) for on-device image generation via Qualcomm AI Hub's pre-converted
+    // SD v1.5 models. We bypass MediaPipe's tasks-vision-image-generator entirely — its
+    // vendored ml_drift backend fails clCreateImage on Adreno 825 (Snapdragon 8s Gen 4)
+    // and the API exposes no CPU/Vulkan fallback. AI Hub publishes TextEncoder / UNet /
+    // VAEDecoder as separate .tflite files specifically tuned for Snapdragon (HTP delegate
+    // available). We drive the diffusion loop ourselves in ImageGenRunner — see that file.
+    implementation 'com.google.ai.edge.litert:litert:1.0.1'
+    implementation 'com.google.ai.edge.litert:litert-gpu:1.0.1'
+
     // OkHttp for model download
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+}
+
+// ---- QNN runtime staging (image-gen Plan B) -----------------------------------------
+// Copies libQnn*.so (host-side stubs from lib/aarch64-android) plus the per-Hexagon-revision
+// Skel libraries into ${buildDir}/qnn-libs/arm64-v8a/. AGP picks them up via the jniLibs
+// srcDir wired in the android {} block above, so they land in the APK without polluting
+// src/main/jniLibs. No-op (with a warning) when QNN_SDK_ROOT is not configured — keeps
+// pre-QAIRT-install builds working through Phase 3.
+def imagegenQnnStageDir = layout.buildDirectory.dir('qnn-libs/arm64-v8a')
+
+tasks.register('stageQnnLibs', Copy) {
+    description = 'Stage QNN runtime .so files from QAIRT install into the JNI libs path.'
+    group = 'imagegen'
+
+    into imagegenQnnStageDir
+
+    onlyIf {
+        if (!imagegenQnnSdkRoot) {
+            logger.warn('stageQnnLibs: QNN_SDK_ROOT not configured; QNN libs will NOT be ' +
+                        'packaged. Set qnn.sdk.root in local.properties or export ' +
+                        'QNN_SDK_ROOT before Phase 4.')
+            return false
+        }
+        if (!file(imagegenQnnSdkRoot).isDirectory()) {
+            logger.warn("stageQnnLibs: QNN_SDK_ROOT '${imagegenQnnSdkRoot}' is not a " +
+                        'directory; skipping QNN libs.')
+            return false
+        }
+        return true
+    }
+
+    if (imagegenQnnSdkRoot && file(imagegenQnnSdkRoot).isDirectory()) {
+        from("${imagegenQnnSdkRoot}/lib/aarch64-android") {
+            include 'libQnn*.so'
+        }
+        ['v68', 'v69', 'v73', 'v75', 'v79', 'v81'].each { rev ->
+            def skelDir = file("${imagegenQnnSdkRoot}/lib/hexagon-${rev}/unsigned")
+            if (skelDir.isDirectory()) {
+                from(skelDir) { include 'libQnnHtp*Skel.so' }
+            }
+        }
+    }
+}
+
+afterEvaluate {
+    tasks.named('preBuild').configure { dependsOn 'stageQnnLibs' }
 }
