@@ -15,6 +15,7 @@
 
 #include "bundle_loader.hpp"
 #include "mnn_session.hpp"
+#include "png_encode.hpp"
 #include "qnn_session.hpp"
 #include "scheduler.hpp"
 #include "tokenizer.hpp"
@@ -426,12 +427,6 @@ std::vector<float> runDiffusion(const std::string& bundleDir,
 // Phase 7: VAE decode + PNG encode.
 // -----------------------------------------------------------------------------
 
-// Declared in png_encode.cpp.
-bool encodeRgbToPng(int width, int height,
-                    const std::vector<uint8_t>& rgb,
-                    std::vector<uint8_t>& pngOut,
-                    std::string& error);
-
 namespace {
 
 // SD 1.5 VAE latent scaling factor — the encoder multiplies by 0.18215, the
@@ -631,6 +626,471 @@ bool runDiffusionToPng(const std::string&    bundleDir,
     if (latents.empty()) {
         return false;
     }
+    std::string vaeReport;
+    if (!vaeDecodeToPng(bundleDir, latents, pngOut, vaeReport)) {
+        report += vaeReport;
+        return false;
+    }
+    report += vaeReport;
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+// Phase 6 (img2img): VAE-encode the input image, noise to t = strength·999,
+// run the tail of the UNet schedule, then VAE-decode + PNG-encode.
+// -----------------------------------------------------------------------------
+
+namespace {
+
+constexpr int kImgC = 3;
+constexpr int kImgH = 512;
+constexpr int kImgW = 512;
+
+// Flat HWC → CHW transpose (inverse of the existing chwToHwc).
+void hwcToChw(const std::vector<float>& hwc, std::vector<float>& chw,
+              int C, int H, int W) {
+    chw.resize(static_cast<std::size_t>(C) * H * W);
+    for (int h = 0; h < H; ++h) {
+        for (int w = 0; w < W; ++w) {
+            for (int c = 0; c < C; ++c) {
+                chw[(static_cast<std::size_t>(c) * H + h) * W + w] =
+                    hwc[(static_cast<std::size_t>(h) * W + w) * C + c];
+            }
+        }
+    }
+}
+
+// VAE-encode a [0,1] RGB CHW 3×512×512 image into SD 1.5 latent space
+// (1×4×64×64 CHW, scaled by 0.18215). Opens vae_encoder.bin in its own
+// QnnSession and tears it down before returning so the UNet session can
+// claim the chip next. Lifted from outfit_swap.cpp::vaeEncodeImage.
+bool vaeEncodeImage(const std::string&        vaeEncoderBin,
+                    const std::vector<float>& rawRgb01CHW,
+                    std::vector<float>&       latentChwOut,
+                    std::string&              report) {
+    using clk = std::chrono::steady_clock;
+    auto t_start = clk::now();
+    std::ostringstream rs;
+
+    const std::size_t inputElems =
+        static_cast<std::size_t>(kImgC) * kImgH * kImgW;
+    if (rawRgb01CHW.size() != inputElems) {
+        rs << "vaeEnc: input size mismatch " << rawRgb01CHW.size();
+        report = rs.str();
+        return false;
+    }
+
+    // VAE input normalization: [0,1] → [−1,1].
+    std::vector<float> normalized(inputElems);
+    for (std::size_t i = 0; i < inputElems; ++i) {
+        normalized[i] = rawRgb01CHW[i] * 2.0f - 1.0f;
+    }
+
+    QnnSession qnn;
+    std::string err;
+    if (!qnn.initialize(err))                   { report = "vaeEnc init: "        + err; return false; }
+    if (!qnn.inspectBinary(vaeEncoderBin, err)) { report = "vaeEnc inspect: "     + err; return false; }
+    if (!qnn.instantiate(err))                  { report = "vaeEnc instantiate: " + err; return false; }
+    auto t_loaded = clk::now();
+
+    if (qnn.graphs().empty()) { report = "vaeEnc: no graphs"; return false; }
+    const auto& g = qnn.graphs()[0];
+    if (g.inputs.size() != 1 || g.outputs.empty()) {
+        report = "vaeEnc expects 1 input + >=1 output, got in=" +
+                 std::to_string(g.inputs.size()) +
+                 " out=" + std::to_string(g.outputs.size());
+        return false;
+    }
+    const auto& inInfo = g.inputs[0];
+
+    // The xororz SD 1.5 vae_encoder may export both the mean and logvar of the
+    // posterior (`AutoencoderKL.encode().latent_dist`). The first output is the
+    // mean — which is what we want for img2img seeding at strength=0.7+ where
+    // the added Gaussian noise dominates the encoder's per-pixel stochasticity.
+    // Pick the first 4-channel 64×64 output.
+    int outIdx = -1;
+    int  outH = 0, outW = 0;
+    bool outIsNhwc = false;
+    for (std::size_t i = 0; i < g.outputs.size(); ++i) {
+        int h = 0, w = 0;
+        bool nhwc = false;
+        if (classifyLayout4D(g.outputs[i].dims, kLatentChan, h, w, nhwc) &&
+            h == kLatentH && w == kLatentW) {
+            outIdx    = static_cast<int>(i);
+            outH      = h;
+            outW      = w;
+            outIsNhwc = nhwc;
+            break;
+        }
+    }
+    if (outIdx < 0) {
+        std::ostringstream es;
+        es << "vaeEnc no 4-channel 64x64 output among " << g.outputs.size()
+           << " outputs:";
+        for (std::size_t i = 0; i < g.outputs.size(); ++i) {
+            es << " [" << i << "] dims=[";
+            for (std::size_t j = 0; j < g.outputs[i].dims.size(); ++j) {
+                if (j) es << 'x';
+                es << g.outputs[i].dims[j];
+            }
+            es << "]";
+        }
+        report = es.str();
+        return false;
+    }
+    const auto& outInfo = g.outputs[outIdx];
+
+    int  inH = 0, inW = 0;
+    bool inIsNhwc = false;
+    if (!classifyLayout4D(inInfo.dims, kImgC, inH, inW, inIsNhwc)) {
+        report = "vaeEnc input dims unclassifiable";
+        return false;
+    }
+    if (inH != kImgH || inW != kImgW) {
+        report = "vaeEnc input shape mismatch H=" + std::to_string(inH) +
+                 " W=" + std::to_string(inW);
+        return false;
+    }
+
+    const std::vector<float>* packView = &normalized;
+    std::vector<float> tmpHwc;
+    if (inIsNhwc) {
+        chwToHwc(normalized, tmpHwc, kImgC, kImgH, kImgW);
+        packView = &tmpHwc;
+    }
+
+    std::vector<uint8_t> inBytes;
+    if (!packFloats(*packView, inInfo, inBytes, err)) {
+        report = "vaeEnc pack: " + err;
+        return false;
+    }
+
+    const std::size_t outElems =
+        static_cast<std::size_t>(kLatentChan) * outH * outW;
+
+    std::vector<std::vector<uint8_t>> inBufs(1);
+    inBufs[0] = std::move(inBytes);
+    // Allocate buffers for every output the graph declares — the QNN runtime
+    // writes into all of them whether we read them or not.
+    std::vector<std::vector<uint8_t>> outBufs(g.outputs.size());
+    for (std::size_t i = 0; i < g.outputs.size(); ++i) {
+        outBufs[i].assign(tensorByteSize(g.outputs[i]), 0);
+    }
+
+    auto t_exec_start = clk::now();
+    if (!qnn.execute(0, inBufs, outBufs, err)) {
+        report = "vaeEnc execute: " + err;
+        return false;
+    }
+    auto t_exec_end = clk::now();
+
+    std::vector<float> outFp32;
+    if (!unpackFloats(outBufs[outIdx], outInfo, outElems, outFp32, err)) {
+        report = "vaeEnc unpack: " + err;
+        return false;
+    }
+    if (outIsNhwc) {
+        hwcToChw(outFp32, latentChwOut, kLatentChan, outH, outW);
+    } else {
+        latentChwOut = std::move(outFp32);
+    }
+    // Encoder outputs are pre-scale; multiply by SD's latent factor.
+    for (float& v : latentChwOut) v *= kLatentScale;
+
+    auto t_end = clk::now();
+    rs << "vaeEnc " << (inIsNhwc ? "NHWC" : "NCHW")
+       << "->" << (outIsNhwc ? "NHWC" : "NCHW")
+       << " (out[" << outIdx << "] of " << g.outputs.size() << ")"
+       << " load="  << std::chrono::duration_cast<std::chrono::milliseconds>(t_loaded - t_start).count() << "ms"
+       << " exec="  << std::chrono::duration_cast<std::chrono::milliseconds>(t_exec_end - t_exec_start).count() << "ms"
+       << " total=" << std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count() << "ms";
+    report = rs.str();
+    return true;
+}
+
+}  // namespace
+
+std::vector<float> runDiffusionImg2Img(const std::string&        bundleDir,
+                                       const std::vector<float>& inputRgbFp32,
+                                       const std::vector<float>& mask64Fp32,
+                                       const std::string&        prompt,
+                                       float                     strength,
+                                       int                       iters,
+                                       uint64_t                  seed,
+                                       std::string&              report) {
+    using clk = std::chrono::steady_clock;
+    auto t_start = clk::now();
+    std::ostringstream rs;
+
+    if (iters < 1) { report = "img2img: iters must be >= 1"; return {}; }
+    if (static_cast<int>(inputRgbFp32.size()) != kImgC * kImgH * kImgW) {
+        report = "img2img: inputRgbFp32 size " +
+                 std::to_string(inputRgbFp32.size()) +
+                 " != " + std::to_string(kImgC * kImgH * kImgW);
+        return {};
+    }
+    constexpr std::size_t kMaskHW =
+        static_cast<std::size_t>(kLatentH) * kLatentW;
+    if (mask64Fp32.size() != kMaskHW) {
+        report = "img2img: mask64Fp32 size " +
+                 std::to_string(mask64Fp32.size()) +
+                 " != " + std::to_string(kMaskHW);
+        return {};
+    }
+
+    // 1. Bundle.
+    Bundle bundle;
+    std::string err;
+    if (!loadBundle(bundleDir, bundle, err)) { report = "bundle: " + err; return {}; }
+
+    // 2. Text encode (cond + uncond) via MNN — identical to runDiffusion.
+    Tokenizer tok(bundle.tokenizerJson);
+    auto tokensCond   = tok.encode(prompt);
+    auto tokensUncond = tok.encode("");
+    auto embInCond   = clipEmbedTokens(tokensCond,   bundle.tokenEmbBin,
+                                       bundle.posEmbBin, kEmbedDim);
+    auto embInUncond = clipEmbedTokens(tokensUncond, bundle.tokenEmbBin,
+                                       bundle.posEmbBin, kEmbedDim);
+
+    MnnSession mnn;
+    if (!mnn.load(bundle.clipMnn, /*preferOpenCL=*/true, err)) {
+        report = "mnn load: " + err; return {};
+    }
+    std::vector<float> embCond, embUncond;
+    if (!mnn.runForward(embInCond,   embCond,   err)) { report = "mnn cond: "   + err; return {}; }
+    if (!mnn.runForward(embInUncond, embUncond, err)) { report = "mnn uncond: " + err; return {}; }
+    if (embCond.size() != kEmbedElems || embUncond.size() != kEmbedElems) {
+        report = "mnn output unexpected size: got " + std::to_string(embCond.size()) +
+                 " / " + std::to_string(embUncond.size()) +
+                 " expected " + std::to_string(kEmbedElems);
+        return {};
+    }
+    auto t_mnn_done = clk::now();
+    logI("img2img text encode done (%lld ms)",
+         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+             t_mnn_done - t_start).count());
+
+    // 3. VAE-encode the input image → z_0 (CHW, scaled by 0.18215).
+    std::string vaeEncReport;
+    std::vector<float> z0;
+    if (!vaeEncodeImage(bundle.vaeEncoderBin, inputRgbFp32, z0, vaeEncReport)) {
+        report = "img2img vae encode: " + vaeEncReport;
+        return {};
+    }
+    rs << "[" << vaeEncReport << "]\n";
+    if (static_cast<int>(z0.size()) != kLatentElems) {
+        report = rs.str() + "img2img: vae encoder produced " +
+                 std::to_string(z0.size()) + " elems, expected " +
+                 std::to_string(kLatentElems);
+        return {};
+    }
+    auto t_vae_enc_done = clk::now();
+
+    // 4. Build scheduler + compute kStart for this strength.
+    Scheduler sched;
+    sched.setTimesteps(iters);
+    const auto& abar = sched.alphasCumprod();
+
+    const float clampedStrength = std::clamp(strength, 0.0f, 1.0f);
+    const int   tStartTarget    =
+        static_cast<int>(clampedStrength * 999.0f);
+    int kStart = iters - 1;
+    for (int i = 0; i < iters; ++i) {
+        if (sched.timestep(i) <= tStartTarget) {
+            kStart = i;
+            break;
+        }
+    }
+    const int   tStart   = sched.timestep(kStart);
+    const float aBarT    = abar[tStart];
+    const float sqrtA    = std::sqrt(aBarT);
+    const float sqrt1A   = std::sqrt(std::max(0.0f, 1.0f - aBarT));
+
+    // 5. Noise the latent: z_t = √(ᾱ_t) · z_0 + √(1 − ᾱ_t) · ε.
+    std::vector<float> eps(kLatentElems);
+    fillGaussian(eps, seed);
+    std::vector<float> latents(kLatentElems);
+    for (int j = 0; j < kLatentElems; ++j) {
+        latents[j] = sqrtA * z0[j] + sqrt1A * eps[j];
+    }
+    rs << "img2img strength=" << clampedStrength
+       << " tStartTarget=" << tStartTarget
+       << " tStart=" << tStart
+       << " kStart=" << kStart << "/" << iters
+       << " aBar=" << aBarT
+       << " unetCalls=" << (iters - kStart) << "\n";
+
+    // 6. QNN session for the base UNet.
+    QnnSession qnn;
+    if (!qnn.initialize(err))                       { report = rs.str() + "qnn init: "        + err; return {}; }
+    if (!qnn.inspectBinary(bundle.unetBin, err))    { report = rs.str() + "qnn inspect: "     + err; return {}; }
+    if (!qnn.instantiate(err))                      { report = rs.str() + "qnn instantiate: " + err; return {}; }
+    auto t_qnn_ready = clk::now();
+    if (qnn.graphs().empty()) { report = rs.str() + "unet binary has no graphs"; return {}; }
+    const auto& g = qnn.graphs()[0];
+
+    // 7. Identify input slots — same name heuristic as runDiffusion.
+    int slotLatent = -1, slotTimestep = -1, slotEmb = -1;
+    for (std::size_t i = 0; i < g.inputs.size(); ++i) {
+        switch (classifyInput(g.inputs[i].name)) {
+            case UnetInputRole::Latent:    slotLatent   = (int)i; break;
+            case UnetInputRole::Timestep:  slotTimestep = (int)i; break;
+            case UnetInputRole::Embedding: slotEmb      = (int)i; break;
+            default: break;
+        }
+    }
+    if (slotLatent < 0 || slotTimestep < 0 || slotEmb < 0) {
+        report = rs.str() + "img2img: could not classify unet inputs (latent=" +
+                 std::to_string(slotLatent) +
+                 " timestep=" + std::to_string(slotTimestep) +
+                 " embedding=" + std::to_string(slotEmb) + ")";
+        return {};
+    }
+    if (g.outputs.size() != 1) {
+        report = rs.str() + "img2img: expected 1 unet output, got " +
+                 std::to_string(g.outputs.size());
+        return {};
+    }
+    const auto& outInfo = g.outputs[0];
+    const std::size_t outBytes = tensorByteSize(outInfo);
+    if (outBytes == 0) {
+        report = rs.str() + "img2img: unet output dtype unsupported: 0x" +
+                 std::to_string(outInfo.dataType);
+        return {};
+    }
+
+    // 8. Pre-pack embeddings.
+    std::vector<uint8_t> embCondBytes, embUncondBytes;
+    if (!packFloats(embCond,   g.inputs[slotEmb], embCondBytes,   err)) {
+        report = rs.str() + "img2img pack embCond: " + err;
+        return {};
+    }
+    if (!packFloats(embUncond, g.inputs[slotEmb], embUncondBytes, err)) {
+        report = rs.str() + "img2img pack embUncond: " + err;
+        return {};
+    }
+    std::vector<std::vector<uint8_t>> inBufs(g.inputs.size());
+    std::vector<std::vector<uint8_t>> outBufs(1);
+
+    auto runUnet = [&](const std::vector<float>& latentFp32,
+                       int                       tVal,
+                       const std::vector<uint8_t>& embBytes,
+                       std::vector<float>&       noiseOut,
+                       std::string&              runErr) -> bool {
+        if (!packFloats(latentFp32, g.inputs[slotLatent],
+                        inBufs[slotLatent], runErr)) return false;
+        const auto& tsInfo = g.inputs[slotTimestep];
+        std::size_t tsElems = 1;
+        for (uint32_t d : tsInfo.dims) tsElems *= d;
+        if (tsInfo.dataType == kDtInt32) {
+            inBufs[slotTimestep].resize(tsElems * sizeof(int32_t));
+            auto* p = reinterpret_cast<int32_t*>(inBufs[slotTimestep].data());
+            for (std::size_t i = 0; i < tsElems; ++i) p[i] = tVal;
+        } else {
+            std::vector<float> tsFp32(tsElems, static_cast<float>(tVal));
+            if (!packFloats(tsFp32, tsInfo, inBufs[slotTimestep], runErr)) return false;
+        }
+        inBufs[slotEmb] = embBytes;
+        outBufs[0].assign(outBytes, 0);
+        if (!qnn.execute(0, inBufs, outBufs, runErr)) return false;
+        return unpackFloats(outBufs[0], outInfo, kLatentElems, noiseOut, runErr);
+    };
+
+    // 9. Diffusion loop with CFG — only the schedule tail [kStart..iters).
+    //    After each scheduler step we apply RePaint-style latent blending so
+    //    the outside-mask region of the latent is always the noised original
+    //    at the next timestep, which locks anatomy/background outside the
+    //    SegFormer mask and removes boundary seams.
+    std::vector<float> noiseCond, noiseUncond;
+    std::vector<float> pred(kLatentElems);
+    std::vector<float> stepNoise(kLatentElems);
+    const uint64_t blendSeedBase = seed ^ 0x6C61746E626C6E64ULL;  // "latnblnd"
+    auto t_loop_start = clk::now();
+    int  maskHits = 0;
+    for (std::size_t j = 0; j < kMaskHW; ++j) if (mask64Fp32[j] > 0.5f) ++maskHits;
+    rs << "img2img mask64 hits=" << maskHits << "/" << kMaskHW << "\n";
+    for (int i = kStart; i < iters; ++i) {
+        const int t = sched.timestep(i);
+        if (!runUnet(latents, t, embCondBytes,   noiseCond,   err)) {
+            report = rs.str() + "img2img unet step " + std::to_string(i) +
+                     " cond: " + err;
+            return {};
+        }
+        if (!runUnet(latents, t, embUncondBytes, noiseUncond, err)) {
+            report = rs.str() + "img2img unet step " + std::to_string(i) +
+                     " uncond: " + err;
+            return {};
+        }
+        for (int k = 0; k < kLatentElems; ++k) {
+            pred[k] = noiseUncond[k] + kGuidanceScale * (noiseCond[k] - noiseUncond[k]);
+        }
+        latents = sched.step(pred, i, latents);
+
+        // RePaint latent blending — after `latents` has been advanced to the
+        // next timestep's noise level, mix in a freshly-noised copy of z₀ at
+        // that level for the outside-mask region. The (1-mask)-side never sees
+        // the UNet's drift; the mask-side carries the full diffused signal.
+        const int   tBlend   = (i + 1 < iters) ? sched.timestep(i + 1) : 0;
+        const float abBlend  = abar[tBlend];
+        const float sqrtA_b  = std::sqrt(abBlend);
+        const float sqrt1A_b = std::sqrt(std::max(0.0f, 1.0f - abBlend));
+        fillGaussian(stepNoise,
+                     blendSeedBase + static_cast<uint64_t>(i) * 0x9E3779B97F4A7C15ULL);
+        for (int c = 0; c < kLatentChan; ++c) {
+            const std::size_t base = static_cast<std::size_t>(c) * kMaskHW;
+            for (std::size_t j = 0; j < kMaskHW; ++j) {
+                const std::size_t idx   = base + j;
+                const float       m     = mask64Fp32[j];
+                const float       zOrig = sqrtA_b  * z0[idx] +
+                                          sqrt1A_b * stepNoise[idx];
+                latents[idx] = m * latents[idx] + (1.0f - m) * zOrig;
+            }
+        }
+
+        float lo = latents[0], hi = latents[0];
+        for (float v : latents) { lo = std::min(lo, v); hi = std::max(hi, v); }
+        logI("img2img step %d/%d (t=%d→%d) latents[min=%.3f max=%.3f]",
+             i + 1, iters, t, tBlend, lo, hi);
+        if (!std::isfinite(lo) || !std::isfinite(hi)) {
+            report = rs.str() + "img2img: latents non-finite at step " +
+                     std::to_string(i);
+            return {};
+        }
+    }
+    auto t_loop_end = clk::now();
+
+    rs << "img2img iters=" << iters << " kStart=" << kStart
+       << " unetCalls=" << (iters - kStart) << " seed=" << seed << "\n"
+       << "timing: mnn="  << std::chrono::duration_cast<std::chrono::milliseconds>(
+                t_mnn_done - t_start).count() << "ms"
+       << " vae_enc="     << std::chrono::duration_cast<std::chrono::milliseconds>(
+                t_vae_enc_done - t_mnn_done).count() << "ms"
+       << " qnn_init="    << std::chrono::duration_cast<std::chrono::milliseconds>(
+                t_qnn_ready - t_vae_enc_done).count() << "ms"
+       << " loop="        << std::chrono::duration_cast<std::chrono::milliseconds>(
+                t_loop_end - t_loop_start).count() << "ms"
+       << " total="       << std::chrono::duration_cast<std::chrono::milliseconds>(
+                t_loop_end - t_start).count() << "ms\n";
+
+    report = rs.str();
+    return latents;
+}
+
+bool runDiffusionImg2ImgToPng(const std::string&        bundleDir,
+                              const std::vector<float>& inputRgbFp32,
+                              const std::vector<float>& mask64Fp32,
+                              const std::string&        prompt,
+                              float                     strength,
+                              int                       iters,
+                              uint64_t                  seed,
+                              std::vector<uint8_t>&     pngOut,
+                              std::string&              report) {
+    std::string diffReport;
+    std::vector<float> latents = runDiffusionImg2Img(
+        bundleDir, inputRgbFp32, mask64Fp32, prompt, strength, iters, seed,
+        diffReport);
+    report = diffReport;
+    if (latents.empty()) return false;
     std::string vaeReport;
     if (!vaeDecodeToPng(bundleDir, latents, pngOut, vaeReport)) {
         report += vaeReport;

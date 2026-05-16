@@ -5,7 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.util.Log
 import com.nothing.localai.imagegen.DEFAULT_DIFFUSION_DIR_NAME
+import com.nothing.localai.imagegen.MiganProbe
 import com.nothing.localai.imagegen.NativeImageGen
+import com.nothing.localai.imagegen.OutfitSwapProbe
+import com.nothing.localai.imagegen.SegformerProbe
 import java.io.File
 import kotlin.concurrent.thread
 
@@ -144,6 +147,72 @@ class LocalAiApp : Application() {
             }
         } catch (t: Throwable) {
             Log.w(TAG, "diffusion-to-png probe failed", t)
+        }
+
+        // Outfit-swap Phase 0c+d probe: if a SegFormer binary and a test image
+        // are present at /data/local/tmp/ (push them via adb), run the model
+        // and dump a colored mask PNG. Confirms QAIRT 2.45→2.46 forward compat.
+        probeSegformerIfPresent()
+    }
+
+    /**
+     * Phase 0c+d outfit-swap probe. Looks for the AI Hub-compiled SegFormer
+     * binary + a test JPEG inside this app's *internal* `filesDir`, which is
+     * accessible from native code without SELinux issues. Push via run-as on
+     * a debug-signed build:
+     * ```
+     *   adb shell run-as com.nothing.localai.debug \
+     *     mkdir -p files/segformer-probe
+     *   adb push segformer_b2_clothes.bin /sdcard/...staging path...
+     *   adb shell 'cat /sdcard/... | run-as com.nothing.localai.debug \
+     *     tee files/segformer-probe/segformer_b2_clothes.bin > /dev/null'
+     * ```
+     * The result PNG lands alongside as `segformer-debug.png`.
+     * See PLAN-OUTFIT-SWAP.md §10 Phase 0.
+     */
+    private fun probeSegformerIfPresent() {
+        val probeDir = File(filesDir, "segformer-probe").apply { mkdirs() }
+        val model = File(probeDir, "segformer_b2_clothes.tflite")
+        val jpg = File(probeDir, "test_portrait.jpg")
+        Log.i(TAG, "segformer probe: looking in ${probeDir.absolutePath}")
+        Log.i(TAG, "  model exists=${model.exists()} size=${if (model.exists()) model.length() else 0}")
+        Log.i(TAG, "  jpg exists=${jpg.exists()} size=${if (jpg.exists()) jpg.length() else 0}")
+        if (!model.isFile || !jpg.isFile) {
+            Log.i(TAG, "segformer probe: skip (use run-as to populate $probeDir)")
+            return
+        }
+        try {
+            val ok = SegformerProbe.run(
+                tfliteModelPath = model.absolutePath,
+                inputJpegPath   = jpg.absolutePath,
+                outputPngPath   = File(probeDir, "segformer-debug.png").absolutePath,
+            )
+            Log.i(TAG, "segformer probe: ok=$ok")
+        } catch (t: Throwable) {
+            Log.w(TAG, "segformer probe threw", t)
+        }
+
+        val migan = File(probeDir, "migan.tflite")
+        if (migan.isFile) {
+            try {
+                val ok = MiganProbe.run(
+                    miganModelPath     = migan.absolutePath,
+                    segformerModelPath = model.absolutePath,
+                    inputJpegPath      = jpg.absolutePath,
+                    outputPngPath      = File(probeDir, "migan-debug.png").absolutePath,
+                )
+                Log.i(TAG, "migan probe: ok=$ok")
+            } catch (t: Throwable) {
+                Log.w(TAG, "migan probe threw", t)
+            }
+        }
+
+        // Full end-to-end outfit-swap probe.
+        try {
+            val ok = OutfitSwapProbe.run(this)
+            Log.i(TAG, "outfit-swap probe: ok=$ok")
+        } catch (t: Throwable) {
+            Log.w(TAG, "outfit-swap probe threw", t)
         }
     }
 

@@ -1,0 +1,19 @@
+[project]
+name = "aihub-compile"
+version = "0.1.0"
+description = "Qualcomm AI Hub compile + validate scripts for outfit-swap models."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "qai-hub>=0.20.0",
+    "torch>=2.2,<2.5",
+    "transformers>=4.41",
+    "diffusers>=0.27",
+    "accelerate>=0.30",
+    "Pillow>=10.0",
+    "numpy>=1.26",
+]
+
+[tool.uv]
+# qai-hub pulls its own Torch matrix; we pin a range broad enough that the Hub
+# client and diffusers both resolve cleanly. If you hit a resolve conflict run
+# `uv sync --refresh` against the published qai-hub version notes.

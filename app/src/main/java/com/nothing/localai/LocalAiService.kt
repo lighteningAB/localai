@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.nothing.localai.imagegen.ImageGenRunner
+import com.nothing.localai.imagegen.OutfitSwapRunner
 import com.nothing.localai.llm.LlmDownloader
 import com.nothing.localai.llm.LlmRunner
 import com.nothing.localai.session.SessionRegistry
@@ -38,6 +39,9 @@ class LocalAiService : LifecycleService() {
     // ImageGenerator (~seconds to construct, ~1–2 GB resident once loaded)
     // doesn't materialize until a widget actually asks for an image.
     private val imageGen by lazy { ImageGenRunner(applicationContext) }
+    // Outfit-swap runner shares the diffusion bundle (CLIP + VAE) and adds the
+    // SegFormer + SD 1.5 inpaint UNet binaries on top. See PLAN-OUTFIT-SWAP.md.
+    private val outfitSwap by lazy { OutfitSwapRunner(applicationContext) }
 
     private var activeRequests = 0
 
@@ -51,6 +55,7 @@ class LocalAiService : LifecycleService() {
         Log.d(TAG, "onUnbind")
         sessions.releaseAll()
         runCatching { imageGen.close() }
+        runCatching { outfitSwap.close() }
         return super.onUnbind(intent)
     }
 
@@ -192,6 +197,11 @@ class LocalAiService : LifecycleService() {
             val wrapped = object : IImageGenCallback.Stub() {
                 override fun onStep(rid: String, step: Int, totalSteps: Int) =
                     cb.onStep(rid, step, totalSteps)
+                override fun onStage(rid: String, stageName: String) {
+                    // generateImage path doesn't emit stages, but the AIDL surface
+                    // requires the method to be implemented. Relay defensively.
+                    runCatching { cb.onStage(rid, stageName) }
+                }
                 override fun onResult(
                     rid: String,
                     pngFd: ParcelFileDescriptor,
@@ -216,6 +226,48 @@ class LocalAiService : LifecycleService() {
 
         override fun cancelImageGen(requestId: String) {
             imageGen.cancel(requestId)
+        }
+
+        // ===== Outfit swap =====
+
+        override fun generateOutfitSwap(
+            inputPng: ParcelFileDescriptor,
+            prompt: String,
+            garmentSpec: String,
+            iterations: Int,
+            seed: Long,
+            cb: IImageGenCallback,
+        ): String {
+            beginRequest()
+            val wrapped = object : IImageGenCallback.Stub() {
+                override fun onStep(rid: String, step: Int, totalSteps: Int) =
+                    cb.onStep(rid, step, totalSteps)
+                override fun onStage(rid: String, stageName: String) =
+                    cb.onStage(rid, stageName)
+                override fun onResult(
+                    rid: String,
+                    pngFd: ParcelFileDescriptor,
+                    width: Int,
+                    height: Int,
+                ) {
+                    try { cb.onResult(rid, pngFd, width, height) } finally { endRequest() }
+                }
+                override fun onError(rid: String, code: String, msg: String) {
+                    try { cb.onError(rid, code, msg) } finally { endRequest() }
+                }
+            }
+            return try {
+                outfitSwap.generate(inputPng, prompt, garmentSpec, iterations, seed, wrapped)
+            } catch (t: Throwable) {
+                Log.e(TAG, "generateOutfitSwap failed", t)
+                val rid = java.util.UUID.randomUUID().toString()
+                runCatching { wrapped.onError(rid, "GENERATE_FAILED", t.message ?: "unknown") }
+                rid
+            }
+        }
+
+        override fun cancelOutfitSwap(requestId: String) {
+            outfitSwap.cancel(requestId)
         }
     }
 }

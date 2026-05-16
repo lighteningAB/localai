@@ -42,4 +42,25 @@ interface ILocalAiService {
     // cache to preserve. Returns a requestId for cancel().
     String generateImage(String prompt, int iterations, long seed, IImageGenCallback cb);
     void cancelImageGen(String requestId);
+
+    // ===== Outfit swap (SD 1.5 inpaint + SegFormer-B2-Clothes) =====
+    // Identity-preserving text-driven outfit edit. The service segments the input photo,
+    // builds an inpaint mask from `garmentSpec`, and runs SD 1.5 inpaint UNet to repaint
+    // the masked region. Single-subject portraits only in v1.
+    //
+    // `garmentSpec` accepts:
+    //   "upper-clothes" | "skirt,pants" | "dress" | "upper-clothes,skirt,pants,dress" | "auto"
+    // Unknown values fail-fast via IImageGenCallback.onError(code="BAD_GARMENT_SPEC").
+    //
+    // Stages stream via IImageGenCallback.onStage; the final PNG arrives via onResult.
+    // See PLAN-OUTFIT-SWAP.md.
+    String generateOutfitSwap(
+        in ParcelFileDescriptor inputPng,
+        String prompt,
+        String garmentSpec,
+        int iterations,
+        long seed,
+        IImageGenCallback cb);
+
+    void cancelOutfitSwap(String requestId);
 }

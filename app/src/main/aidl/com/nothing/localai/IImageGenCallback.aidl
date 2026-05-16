@@ -12,4 +12,8 @@ oneway interface IImageGenCallback {
     void onStep(String requestId, int step, int totalSteps);
     void onResult(String requestId, in ParcelFileDescriptor pngFd, int width, int height);
     void onError(String requestId, String code, String message);
+
+    // Outfit-swap stages: "segmenting" | "encoding" | "diffusing" | "decoding".
+    // Fires once per stage transition. Append-only; existing consumers may ignore.
+    void onStage(String requestId, String stageName);
 }

@@ -85,4 +85,75 @@ object NativeImageGen {
         iters: Int,
         seed: Long,
     ): ByteArray?
+
+    /**
+     * Phase 6 img2img entry — see PLAN-IMG2IMG.md. Given an RGB image as
+     * [inputRgbFp32] (flat 3×512×512 CHW [0,1]) and a [strength] in [0,1],
+     * runs SD 1.5 with the latent seeded from the VAE-encoded input at
+     * `t = strength·999` instead of from pure noise, then the schedule tail,
+     * VAE decode, and PNG encode. Returns the PNG bytes on success or null
+     * on failure (diagnostic in logcat tags `imagegen` / `diffusion`).
+     *
+     * Used by [OutfitSwapRunner] to seed the SD UNet from the MI-GAN-erased
+     * portrait so generated garment texture inherits body shape, perspective,
+     * and lighting.
+     */
+    external fun nativeRunDiffusionImg2ImgPng(
+        bundleDir: String,
+        prompt: String,
+        inputRgbFp32: FloatArray,
+        mask64Fp32: FloatArray,
+        strength: Float,
+        iters: Int,
+        seed: Long,
+    ): ByteArray?
+
+    /**
+     * Phase 0c+d entry point (outfit-swap, see [PLAN-OUTFIT-SWAP.md]): run
+     * `mattmdjaga/segformer_b2_clothes` on a 512×512 RGB image and return a
+     * colored visualization of the argmaxed class map as PNG bytes.
+     *
+     * - [modelBinPath]: absolute path to `segformer_b2_clothes.bin` (the AI Hub
+     *   compile output; push to device via adb for Phase 0 testing).
+     * - [inputRgbFp32]: flat 3×512×512 fp32 buffer, CHW row-major, normalized
+     *   to ImageNet stats (`(rgb01 - mean) / std`, mean=[.485,.456,.406],
+     *   std=[.229,.224,.225]). Caller does the resize + normalize on the JVM
+     *   side via Bitmap.
+     *
+     * Returns null on failure — full diagnostic in logcat tag `segformer`.
+     */
+    external fun nativeRunSegformerMaskPng(
+        modelBinPath: String,
+        inputRgbFp32: FloatArray,
+    ): ByteArray?
+
+    /**
+     * Outfit-swap Phase 2/3 entry point. Runs the full pipeline on-device:
+     * SegFormer-B2-Clothes → mask_ops → CLIP + VAE encode → SD 1.5 inpaint
+     * UNet diffusion (DDIM, CFG) → VAE decode → PNG. Synchronous; returns
+     * the encoded PNG bytes on success, null on failure. Multi-line
+     * diagnostic in logcat tag `outfit_swap` (and the per-stage tags
+     * `segformer` / `diffusion`).
+     *
+     * - [rawRgbFp32] flat 3×512×512 fp32, CHW row-major, values in [0,1]
+     *   (no normalization — the pipeline applies ImageNet + VAE norms internally).
+     * - [bundleDir] absolute path to the xororz SD-QNN bundle dir
+     *   (provides CLIP MNN + VAE encoder/decoder + tokenizer).
+     * - [segformerBinPath] absolute path to the AI Hub-compiled SegFormer .bin.
+     * - [inpaintUnetBinPath] absolute path to the AI Hub-compiled SD 1.5
+     *   inpaint UNet .bin (9-channel input).
+     * - [selectedClasses] bitfield over SegFormer's 18 ATR classes. See
+     *   mask_ops.hpp `kGarment*` presets; use `kGarmentTop` (bit 4) for
+     *   upper-clothes, etc.
+     */
+    external fun nativeRunOutfitSwap(
+        rawRgbFp32: FloatArray,
+        bundleDir: String,
+        segformerBinPath: String,
+        inpaintUnetBinPath: String,
+        prompt: String,
+        selectedClasses: Int,
+        iterations: Int,
+        seed: Long,
+    ): ByteArray?
 }

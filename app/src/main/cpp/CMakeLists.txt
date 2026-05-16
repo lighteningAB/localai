@@ -47,6 +47,9 @@ add_library(imagegen SHARED
     qnn_session.cpp
     mnn_session.cpp
     diffusion.cpp
+    segformer.cpp
+    mask_ops.cpp
+    outfit_swap.cpp
     png_encode.cpp
 )
 
