@@ -140,7 +140,9 @@ adb logcat -c && adb logcat \
   | grep -v "XNNPack weight cache: written"
 
 # 3. From the Aiwidget side, exercise text / image / audio via the
-#    chatbot-1, camera-vision-1, audio-prompt-1 widgets.
+#    chatbot-1, camera-vision-1, audio-prompt-1 widgets, or the
+#    daily-outfit pipeline via outfit-suggest-1 / outfit-flip-1
+#    (calendar + weather → Gemma → SD 1.5, four outfits per day).
 ```
 
 What you should see on a healthy cold load (one-time; subsequent loads hit
@@ -506,6 +508,17 @@ marshals through the AIDL surface to `ImageGenRunner.generate`. The PNG
 bytes return via a `ParcelFileDescriptor.createPipe()` — the write end is
 closed after the byte array drains; the read end crosses the binder
 boundary and is decoded back to a bitmap on the widget side.
+
+The `outfit-suggest-1` and `outfit-flip-1` testwidgets chain `generate`
+(Gemma streams four outfit specs given today's calendar + weather + the
+user's profile) with four serial calls to `generateImage` (one render per
+spec, SD 1.5). They surface the documented memory caveat below: with
+Gemma 4 E4B resident (~3.7 GB) the inference subprocess can be OOM-killed
+while loading SD's UNet (~880 MB), so the widget wraps each
+`generateImage` call in a 90 s idle watchdog and surfaces a clear error if
+no `LocalAi.image` events arrive after the binder dies. A service-side
+`unloadModel` AIDL method would eliminate the race; tracked in
+`KNOWN-ISSUES.md`.
 
 `onStep` AIDL events are not wired yet — the first stage delivers a single
 `onResult` once the PNG is ready. Per-step progress UI requires a
