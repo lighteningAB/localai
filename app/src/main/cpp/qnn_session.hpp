@@ -95,4 +95,15 @@ private:
 // formats a multi-line report. Returns the report (or an "ERROR: ..." line).
 std::string inspectQnnBinaryReport(const std::string& path);
 
+// Compat probe: init + inspectBinary + instantiate against the running device.
+// inspectBinary is metadata-only and parses; instantiate is the call that
+// actually hands the binary to libQnnHtp and surfaces failures like
+// rc=0x138d when the binary's HTP target arch is incompatible with the
+// silicon (e.g. an _8gen3.zip / V75-targeted bundle on a V73 device).
+//
+// The report has one line per stage with a clear PASS/FAIL marker and the
+// QNN rc on failure, suitable for a yes/no answer to "does this bundle load
+// on this device?" without touching the rest of the bundle.
+std::string probeQnnBinaryLoadReport(const std::string& path);
+
 }  // namespace imagegen

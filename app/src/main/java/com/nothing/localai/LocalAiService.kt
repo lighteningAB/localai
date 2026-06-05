@@ -22,7 +22,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 private const val TAG = "LocalAiService"
-private const val API_VERSION = 1
+private const val API_VERSION = 2
 private const val FG_NOTIFICATION_ID = 1001
 
 class LocalAiService : LifecycleService() {
@@ -268,6 +268,33 @@ class LocalAiService : LifecycleService() {
 
         override fun cancelOutfitSwap(requestId: String) {
             outfitSwap.cancel(requestId)
+        }
+
+        // ===== SDXL image generation (apiVersion 2) =====
+        // Stub until ImageGenXLRunner lands (task #6). The AIDL surface ships
+        // first so consumer apps can compile against apiVersion 2; calls
+        // currently fail-fast with NOT_IMPLEMENTED so the contract is honest.
+
+        override fun generateImageXL(
+            prompt: String,
+            iterations: Int,
+            seed: Long,
+            cb: IImageGenCallback,
+        ): String {
+            val rid = java.util.UUID.randomUUID().toString()
+            runCatching {
+                cb.onError(
+                    rid,
+                    "NOT_IMPLEMENTED",
+                    "generateImageXL: SDXL pipeline is wired through AIDL but the " +
+                        "runner is not yet implemented. Tracking under task #6.",
+                )
+            }
+            return rid
+        }
+
+        override fun cancelImageGenXL(requestId: String) {
+            // No-op until the runner is wired.
         }
     }
 }

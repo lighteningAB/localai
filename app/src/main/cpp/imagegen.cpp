@@ -69,6 +69,20 @@ Java_com_nothing_localai_imagegen_NativeImageGen_nativeInspectQnnBinary(JNIEnv* 
     return env->NewStringUTF(report.c_str());
 }
 
+// SDXL bundle verification probe. Calls init + inspectBinary + instantiate
+// against the device's HTP backend; the multi-line report ends with a
+// VERDICT line that's safe to grep. Use to decide whether a candidate
+// bundle (e.g. an _8gen3.zip on a V73 device) is runtime-compatible
+// before integrating it into the diffusion pipeline.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_nothing_localai_imagegen_NativeImageGen_nativeProbeQnnBinaryLoad(JNIEnv* env,
+                                                                          jobject /*thiz*/,
+                                                                          jstring path) {
+    std::string p = jstringToStdString(env, path);
+    std::string report = imagegen::probeQnnBinaryLoadReport(p);
+    return env->NewStringUTF(report.c_str());
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_nothing_localai_imagegen_NativeImageGen_nativeInspectMnnModel(JNIEnv* env,
                                                                        jobject /*thiz*/,

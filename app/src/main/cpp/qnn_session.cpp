@@ -149,6 +149,10 @@ std::string inspectQnnBinaryReport(const std::string& path) {
     return std::string("ERROR: QnnSession not built with QAIRT (path=") + path + ")";
 }
 
+std::string probeQnnBinaryLoadReport(const std::string& path) {
+    return std::string("ERROR: QnnSession not built with QAIRT (path=") + path + ")";
+}
+
 #else  // IMAGEGEN_HAS_QNN
 
 // -----------------------------------------------------------------------------
@@ -825,6 +829,43 @@ std::string inspectQnnBinaryReport(const std::string& path) {
         for (const auto& t : g.inputs)  appendTensor(os, "in ", t);
         for (const auto& t : g.outputs) appendTensor(os, "out", t);
     }
+    return os.str();
+}
+
+std::string probeQnnBinaryLoadReport(const std::string& path) {
+    QnnSession sess;
+    std::string err;
+    std::ostringstream os;
+    os << "QNN probe: " << path << "\n";
+
+    if (!sess.initialize(err)) {
+        os << "init: FAIL " << err << "\n";
+        return os.str();
+    }
+    os << "init: OK (" << sess.interfaceVersion() << ")\n";
+
+    if (!sess.inspectBinary(path, err)) {
+        os << "inspect: FAIL " << err << "\n";
+        return os.str();
+    }
+    os << "inspect: OK (" << sess.graphs().size() << " graph"
+       << (sess.graphs().size() == 1 ? "" : "s") << ")\n";
+    for (const auto& g : sess.graphs()) {
+        os << "  graph '" << g.name << "'\n";
+        for (const auto& t : g.inputs)  appendTensor(os, "in ", t);
+        for (const auto& t : g.outputs) appendTensor(os, "out", t);
+    }
+
+    // The decisive step. instantiate() calls QnnContext_createFromBinary
+    // against the live HTP backend — failures here surface as rc=0x... and
+    // mean the binary's compile target is incompatible with the silicon.
+    if (!sess.instantiate(err)) {
+        os << "instantiate: FAIL " << err << "\n";
+        os << "VERDICT: bundle does NOT load on this device\n";
+        return os.str();
+    }
+    os << "instantiate: OK\n";
+    os << "VERDICT: bundle loads on this device — runtime-compatible\n";
     return os.str();
 }
 

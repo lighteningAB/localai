@@ -63,4 +63,22 @@ interface ILocalAiService {
         IImageGenCallback cb);
 
     void cancelOutfitSwap(String requestId);
+
+    // ===== SDXL image generation (apiVersion >= 2) =====
+    // Independent SDXL-Lightning pipeline running its own QNN UNet + dual
+    // MNN text encoders (CLIP-L + OpenCLIP-G) on V73. Routed by the service
+    // to ImageGenXLRunner; does not share session or memory with generateImage
+    // (which targets SD 1.5). Distinct method so consumers can pick at the
+    // call site rather than via opaque model-id routing.
+    //
+    // Callback semantics identical to generateImage: onStep streams progress,
+    // onResult delivers a 1024×1024 PNG via PFD, onError surfaces failure
+    // codes. Returns a requestId for cancelImageGenXL().
+    //
+    // Callers MUST verify getApiVersion() >= 2 before invoking; older
+    // services will throw TransactionTooLargeException / DeadObjectException
+    // on the binder call.
+    String generateImageXL(String prompt, int iterations, long seed, IImageGenCallback cb);
+
+    void cancelImageGenXL(String requestId);
 }

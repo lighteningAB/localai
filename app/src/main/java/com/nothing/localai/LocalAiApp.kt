@@ -55,6 +55,39 @@ class LocalAiApp : Application() {
             Log.w(TAG, "nativeSetAdspLibraryPath threw", t)
         }
         probeQnnInspectIfBinaryPresent()
+        probeSdxlVerifyIfPresent()
+    }
+
+    /**
+     * One-shot SDXL bundle compatibility probe. If a UNet context binary has
+     * been pushed to `<filesDir>/models/sd-xl-verify/unet.bin` (see
+     * `scripts/probe-sdxl-bundle.sh`), run init + inspectBinary + instantiate
+     * against it and log the multi-line PASS/FAIL report.
+     *
+     * The decisive test is the `instantiate` step — it calls
+     * `QnnContext_createFromBinary` against the live HTP backend and surfaces
+     * incompatibility (e.g. an _8gen3 / V75-targeted SDXL binary on a V73
+     * device) as `rc=0x...`. The report ends with a `VERDICT:` line for an
+     * unambiguous grep.
+     *
+     * To re-run, push a new binary into the same path; to disable, delete
+     * the directory.
+     */
+    private fun probeSdxlVerifyIfPresent() {
+        val verifyDir = File(File(filesDir, "models"), "sd-xl-verify")
+        val unet = File(verifyDir, "unet.bin")
+        if (!unet.isFile) {
+            Log.i(TAG, "no sd-xl-verify/unet.bin at $verifyDir — skip SDXL probe " +
+                "(push with scripts/probe-sdxl-bundle.sh)")
+            return
+        }
+        Log.i(TAG, "SDXL probe: ${unet.absolutePath} (${unet.length()} bytes)")
+        try {
+            val report = NativeImageGen.nativeProbeQnnBinaryLoad(unet.absolutePath)
+            report.lineSequence().forEach { Log.i(TAG, "sdxl-probe: $it") }
+        } catch (t: Throwable) {
+            Log.w(TAG, "SDXL probe threw", t)
+        }
     }
 
     /**

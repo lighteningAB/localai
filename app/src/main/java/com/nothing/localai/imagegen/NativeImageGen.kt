@@ -36,6 +36,20 @@ object NativeImageGen {
     external fun nativeInspectQnnBinary(path: String): String
 
     /**
+     * SDXL-bundle verification probe. Calls QnnSession init + inspectBinary
+     * + **instantiate** (the real `QnnContext_createFromBinary` against the
+     * live HTP backend), and returns a multi-line PASS/FAIL report ending in
+     * a `VERDICT:` line.
+     *
+     * Use this before integrating a candidate bundle whose Hexagon-revision
+     * target may differ from the device's silicon (e.g. xororz's SDXL
+     * `_8gen3.zip` / V75-targeted bundles vs our SM8735 V73 silicon).
+     * Metadata-only [nativeInspectQnnBinary] succeeds even when the runtime
+     * load will reject the binary — this entry is the decisive test.
+     */
+    external fun nativeProbeQnnBinaryLoad(path: String): String
+
+    /**
      * Phase 4b verification (metadata): load `clip_v2.mnn`, return a report of
      * the model's input/output shapes + active backend (OpenCL or CPU).
      */
