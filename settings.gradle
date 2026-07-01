@@ -3,6 +3,15 @@ pluginManagement {
         google()
         mavenCentral()
         gradlePluginPortal()
+        // Nothing internal repo hosting com.nothing.app.tools.server-sign
+        // (server-side APK signing with the release key). Listed LAST: it 500s
+        // on artifacts it doesn't host, so let standard plugins resolve from
+        // google/portal first and only fall through here for the sign plugin.
+        // Requires the corp network / maven.nothing.local reachable.
+        maven {
+            allowInsecureProtocol = true
+            url "http://maven.nothing.local:8081/repository/app_build/"
+        }
     }
 }
 dependencyResolutionManagement {

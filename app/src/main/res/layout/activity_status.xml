@@ -12,4 +12,47 @@
         android:textSize="16sp"
         android:fontFamily="monospace"
         android:text="Loading…" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:textStyle="bold"
+        android:textSize="16sp"
+        android:text="Multimodal model" />
+
+    <RadioGroup
+        android:id="@+id/model_group"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="vertical" />
+
+    <TextView
+        android:id="@+id/model_note"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textSize="13sp"
+        android:textColor="#888888"
+        android:text="" />
+
+    <!-- Dev-only: drive a one-shot generate against the active model so the
+         NPU/Hexagon load path can be exercised from adb. Logs to tag NpuDiag. -->
+    <Button
+        android:id="@+id/test_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="20dp"
+        android:text="Test active model" />
+
+    <TextView
+        android:id="@+id/test_output"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textSize="13sp"
+        android:fontFamily="monospace"
+        android:text="" />
+
 </LinearLayout>

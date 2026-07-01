@@ -269,5 +269,20 @@ class LocalAiService : LifecycleService() {
         override fun cancelOutfitSwap(requestId: String) {
             outfitSwap.cancel(requestId)
         }
+
+        // ===== Active multimodal model selection =====
+
+        override fun getActiveModel(): String = runner.activeModelId()
+
+        override fun setActiveModel(modelId: String): String {
+            // Close every live Conversation before swapping — LiteRT-LM refuses
+            // to close an Engine that still has an open Conversation. The engine
+            // itself reloads lazily on the next generate().
+            if (runner.activeModelId() != modelId) {
+                sessions.releaseAll()
+                runner.setActiveModel(modelId)
+            }
+            return runner.activeModelId()
+        }
     }
 }

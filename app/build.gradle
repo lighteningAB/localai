@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
+    id 'com.nothing.app.tools.server-sign'
 }
 
 // Resolve QAIRT (QNN SDK) install path for the native image-gen build.
@@ -71,6 +72,20 @@ android {
     }
     kotlinOptions { jvmTarget = '17' }
 
+    // Server-side signing key (com.nothing.app.tools.server-sign). "new_releasekey"
+    // matches Aiwidget so both APKs share a signer (BIND_AI signature permission)
+    // and localai becomes a trusted/release-signed app — required for the litertlm
+    // Hexagon-NPU signed-PD offload. Options: new_releasekey, platform, media, shared.
+    serverSigningConfigs {
+        // "platform" (not new_releasekey): the platform cert maps via the device's
+        // seapp_contexts to the privileged platform_app SELinux domain, which can
+        // read vendor_sysfs_soc and use a signed process domain on the Hexagon DSP
+        // — required for litertlm's QNN dispatch. A plain release-signed /data app
+        // stays untrusted_app and fails QNN manager setup. Options: new_releasekey,
+        // platform, media, shared.
+        apkSignKey "platform"
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix ".debug"
@@ -99,6 +114,13 @@ android {
                 'META-INF/DEPENDENCIES'
             ]
         }
+    }
+
+    androidResources {
+        // Large model assets (e.g. the 2.5GB sdxl_lightning_unet.bin) overflow
+        // aapt's in-memory compressor ("Required array size too large", >2GB
+        // byte[]). Skipping compression also lets them be mmap-loaded at runtime.
+        noCompress += ['.bin', '.tflite', '.litertlm']
     }
 }
 

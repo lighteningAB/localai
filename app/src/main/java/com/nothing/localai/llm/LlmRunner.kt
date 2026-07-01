@@ -74,21 +74,72 @@ private fun wrapPcm16MonoAsWav(pcm: ByteArray, sampleRate: Int): ByteArray {
 class LlmRunner(
     private val ctx: Context,
     private val downloader: LlmDownloader,
-    private val modelId: String = ModelId.DEFAULT,
 ) {
 
     @Volatile private var engine: Engine? = null
+    // Active model is persisted in :inference's ModelPrefs and swappable at
+    // runtime via [setActiveModel] (driven by StatusActivity over the binder).
+    @Volatile private var modelId: String = ModelPrefs.getActiveModelId(ctx)
     private val jobs = ConcurrentHashMap<String, Job>()
     val spec: ModelSpec get() = ModelCatalog.byId(modelId) ?: error("unknown model $modelId")
+
+    fun activeModelId(): String = modelId
 
     @Synchronized
     fun engine(): Engine {
         engine?.let { return it }
         val modelFile: File = downloader.fileFor(spec)
         check(modelFile.exists()) { "model not present at ${modelFile.absolutePath}" }
+        // Text/decoder backend. CPU_GPU bundles run the decoder on XNNPACK CPU;
+        // the Qualcomm NPU bundle runs it on the Hexagon NPU via QNN/QAIRT.
+        // Backend.NPU needs a real filesystem path so FastRPC can load the
+        // per-Hexagon-rev Skel — same nativeLibraryDir the imagegen QNN path uses.
+        val textBackend = when (spec.accelerator) {
+            // Run the Gemma-4 decoder on the Adreno GPU (LiteRT-LM 0.11.0 added
+            // Gemma-4 MTP GPU decode, ~2x). If Engine.initialize() throws a text
+            // backend constraint mismatch, fall back to Backend.CPU().
+            Accelerator.CPU_GPU -> Backend.GPU()
+            Accelerator.NPU -> {
+                val nativeDir = ctx.applicationInfo.nativeLibraryDir
+                // Backend.NPU takes the dir LiteRT scans for the dispatch plugin
+                // (a .so exporting LiteRtDispatchGetApi — NOT shipped in the
+                // litertlm 0.11.0 AAR; see README) AND for version-matched QNN
+                // libs (litert prepends this dir to the QNN search path). The AAR's
+                // libLiteRt expects a SPECIFIC QNN version (Qnn 2.33 / System 1.8 /
+                // QAIRT 2.44.0.260225) — our app-bundled QNN is 2.46 (Qnn 2.35),
+                // too new, which makes `dispatch_api.cc: Failed to set up QNN manager`.
+                // So we stage the matched dispatch + QNN libs (Htp/System/Stub/Skel)
+                // in files/models and point both LiteRT and FastRPC there, isolated
+                // from the imagegen SD path which keeps using 2.46 in nativeLibraryDir.
+                // nativeLibraryDir is read-only post-install, hence files/models.
+                val modelsDir = downloader.fileFor(spec).parentFile
+                val dispatchDir = modelsDir?.takeIf { d ->
+                    d.listFiles()?.any {
+                        it.isFile && it.name.contains("ispatch", ignoreCase = true) &&
+                            it.name.endsWith(".so")
+                    } == true
+                }?.absolutePath ?: nativeDir
+                // FastRPC loads the per-Hexagon-rev Skel by filesystem path via
+                // ADSP_LIBRARY_PATH; point it at the dispatch dir first so the
+                // matched V73 Skel staged there wins over the 2.46 one in
+                // nativeLibraryDir, then fall back to nativeDir. Set before
+                // initialize() to beat LocalAiApp's daemon-probe race.
+                runCatching {
+                    com.nothing.localai.imagegen.NativeImageGen
+                        .nativeSetAdspLibraryPath("$dispatchDir:$nativeDir")
+                }.onFailure { Log.w(TAG, "nativeSetAdspLibraryPath failed (NPU)", it) }
+                Log.i(TAG, "NPU dispatch dir = $dispatchDir (adsp=$dispatchDir:$nativeDir)")
+                Backend.NPU(dispatchDir)
+            }
+        }
         val cfg = EngineConfig(
             modelPath = modelFile.absolutePath,
-            backend = Backend.CPU(),
+            backend = textBackend,
+            // Vision encoder stays on the Adreno GPU even for the NPU bundle —
+            // the Qualcomm artifact specializes the decoder, not the SigLIP
+            // tower. If Engine.initialize() throws a vision backend constraint
+            // mismatch, flip this to Backend.NPU(...) / Backend.CPU() per the
+            // error's "Model requires one of [...]" hint.
             visionBackend = if (spec.supportsVision) Backend.GPU() else null,
             // gemma-4-E4B-it.litertlm's audio encoder is CPU-only — Engine.initialize()
             // throws "Audio backend constraint mismatch. Model requires one of [cpu]
@@ -96,6 +147,7 @@ class LlmRunner(
             // isn't (yet). Keep CPU until a future bundle lifts the constraint.
             audioBackend = if (spec.supportsAudio) Backend.CPU() else null,
         )
+        Log.i(TAG, "initializing engine: model=$modelId accel=${spec.accelerator} path=${modelFile.absolutePath}")
         // initialize() can take ~10s for a 3.66 GB .litertlm — caller must be
         // off the main thread. Service binder calls already arrive on a pool
         // thread, and Aiwidget's bridge guarantees Dispatchers.IO upstream.
@@ -103,6 +155,29 @@ class LlmRunner(
             it.initialize()
             engine = it
         }
+    }
+
+    /**
+     * Swap the active model. Persists the choice and tears down the live engine
+     * so the next [engine] call rebuilds against the new bundle. The caller MUST
+     * close every open [Conversation] first (SessionRegistry.releaseAll) — the
+     * engine refuses to close while a Conversation is open against it.
+     *
+     * No-op (returns false) if [modelId] is already active or unknown.
+     */
+    @Synchronized
+    fun setActiveModel(newId: String): Boolean {
+        if (ModelCatalog.byId(newId) == null) {
+            Log.w(TAG, "setActiveModel: unknown model $newId")
+            return false
+        }
+        if (newId == modelId) return false
+        Log.i(TAG, "switching model $modelId -> $newId")
+        ModelPrefs.setActiveModelId(ctx, newId)
+        engine?.let { runCatching { it.close() } }
+        engine = null
+        modelId = newId
+        return true
     }
 
     fun newConversation(): Conversation =

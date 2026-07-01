@@ -99,9 +99,76 @@ adb shell "run-as com.nothing.localai.debug cp /data/local/tmp/gemma-4-E4B-it.li
 
 For the smaller **E2B** variant (~2.59 GB, faster cold load, lower quality), push
 `gemma-4-E2B-it.litertlm` from `litert-community/gemma-4-E2B-it-litert-lm` and
-flip `ModelId.DEFAULT` to `GEMMA4_E2B_INT4`. (The E2B repo also ships
-`qualcomm_sm8750` and `qualcomm_qcs8275` NPU-specialized bundles; neither
-matches our SM8735 / Snapdragon 8s Gen 4, so we stay on the generic bundle.)
+flip `ModelId.DEFAULT` to `GEMMA4_E2B_INT4`.
+
+### Hexagon NPU bundle (runtime toggle)
+
+The E2B repo also ships `qualcomm_sm8750` and `qualcomm_qcs8275` NPU-specialized
+bundles that run the decoder on the **Hexagon NPU** via QNN/QAIRT instead of
+XNNPACK CPU. Neither targets our SM8735 / Snapdragon 8s Gen 4 exactly; we use the
+`sm8750` (Hexagon V79) artifact and rely on HTP forward-compat. A model switch
+lives in **StatusActivity** (radio group + a dev "Test active model" button that
+drives one `generate` so the load path can be exercised from adb).
+
+Push the bundle (the `ModelSpec` filename matches the HF artifact, no rename):
+
+```bash
+adb push gemma-4-E2B-it_qualcomm_sm8750.litertlm /data/local/tmp/
+adb shell "run-as com.nothing.localai.debug \
+  cp /data/local/tmp/gemma-4-E2B-it_qualcomm_sm8750.litertlm files/models/"
+```
+
+Selecting it persists to `ModelPrefs` and reloads the engine on the next request
+(`LlmRunner.setActiveModel` closes the live session, then `engine()` rebuilds with
+`Backend.NPU(nativeLibraryDir)`, after setting `ADSP_LIBRARY_PATH` so FastRPC can
+load the V73 Skel).
+
+#### Status: NOT working yet — 5 walls cleared, stuck on a silent QNN-manager-setup failure
+
+Exhaustively driven on device (SM8735/V73, 2026-06-30) with the real
+`gemma-4-E2B-it_qualcomm_sm8750.litertlm`. On failure the `:inference` process
+native-aborts (SIGABRT in `liblitertlm_jni nativeCreateEngine`, uncatchable from
+Kotlin → `DeadObjectException`). Six walls; the first five are solved:
+
+1. **Dispatch plugin (SOLVED).** `Backend.NPU(dir)` makes LiteRT's Dispatch delegate
+   scan `dir` for a `.so` exporting `LiteRtDispatchGetApi`; the `litertlm-android:0.11.0`
+   AAR doesn't ship it (google-ai-edge/LiteRT #6889). Official prebuilt: LiteRT release
+   **v2.1.5** asset `litert_npu_runtime_libraries.zip` → `qualcomm_runtime_v73/.../libLiteRtDispatch_Qualcomm.so`.
+   It's bundled in `app/src/main/jniLibs/arm64-v8a/` (see wall 5 for why not files/models).
+2. **QNN version (SOLVED).** litertlm 0.11.0 wants Qnn 2.33 / System 1.8 / backend 5.44 =
+   **QAIRT 2.44.0.260225** (public URL in the zip's `fetch_qualcomm_library.sh`). Default
+   `stageQnnLibs` uses 2.46 (Qnn 2.35, too new) → `Qnn System library version 1.10.0 …
+   LiteRT using is 1.8.0` → fail. Staging 2.44 in files/models does NOT override (DT_NEEDED
+   resolves via the linker → nativeLibraryDir). Fix: **build the app on QAIRT 2.44**
+   (`QNN_SDK_ROOT=<2.44>`). SD imagegen still works on 2.44 — no regression.
+3. **SELinux domain (SOLVED).** A plain release-signed (`new_releasekey`) /data app stays
+   `untrusted_app`. Sign with the **`platform`** key (`serverSigningConfigs.apkSignKey "platform"`)
+   → `platform_app` domain (can read `vendor_sysfs_soc`, etc.).
+4. **`sku` sysfs denial (red herring).** SD hits the same `avc: denied name="sku"` and
+   works; platform_app reads it fine anyway.
+5. **Execute denial + MLS (SOLVED).** `platform_app` can't `execute` a `.so` from
+   app-data (`files/models`) — bundle the dispatch lib in `jniLibs` so it runs from
+   nativeLibraryDir. Also, hand-pushed model files get per-app MLS categories the
+   platform_app process (c512,c768) can't read → "MISSING"; for testing
+   `chcon u:object_r:app_data_file:s0:c512,c768 <file>` (in prod the app downloads the
+   model, so it's labeled correctly).
+6. **STILL STUCK: `dispatch_api.cc:135 Failed to set up QNN manager`** →
+   `No usable Dispatch runtime found` → SIGABRT. Happens host-side right after
+   `QnnDsp: Initializing HtpProvider`, **before any FastRPC/DSP session** (so it's not
+   signed-PD), with no version warning and no SELinux denial. litertlm sets QnnLog
+   `LogLevel:0` and doesn't expose an override, so the underlying QNN error is invisible.
+   Our own SD `qnn_session.cpp` creates `QnnBackend`+`QnnDevice` successfully with the
+   **same** 2.44 libs on this device — so it's how litertlm's opaque dispatch configures
+   QNN, not the device. Matches unresolved upstream issues google-ai-edge/LiteRT-LM
+   #1121 / #1377 ("Unable to run LiteRT-LM on Qualcomm").
+
+**Next options:** (a) try `litertlm-android:0.13.1` (may configure QNN differently or
+surface the error); (b) bypass litertlm and run the decoder on the NPU via our own
+`qnn_session.cpp`-style QNN setup (proven backend/device create works here) — large
+reimplementation; (c) verbose QNN logging / upstream help.
+
+The toggle still works for the CPU/GPU bundles and falls back to `ModelId.DEFAULT`
+for an unknown/missing selection.
 
 ## Modalities
 
@@ -344,8 +411,12 @@ this runtime we don't get Hexagon NPU acceleration; the win versus MediaPipe
 `tasks-genai` is Gemma 4 quality + full multimodal coverage, not raw
 throughput.
 
-If/when Google ships a `sm8735` bundle, swap the filename in `ModelCatalog`
-and the runner will pick up NPU automatically — no other changes needed.
+The decoder backend is now per-model: `ModelSpec.accelerator` is `CPU_GPU` for
+the generic bundles and `NPU` for `GEMMA4_E2B_NPU`, which makes `LlmRunner.engine()`
+build `Backend.NPU(nativeLibraryDir)`. Switch between them live from the model
+selector in StatusActivity (see "Hexagon NPU bundle" above). If/when Google ships
+an `sm8735` bundle, point `ModelCatalog.GEMMA4_E2B_NPU.fileName` at it — no other
+changes needed.
 
 ## Image generation (Stable Diffusion 1.5 on Hexagon NPU)
 

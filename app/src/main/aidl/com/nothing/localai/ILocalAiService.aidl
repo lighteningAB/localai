@@ -63,4 +63,13 @@ interface ILocalAiService {
         IImageGenCallback cb);
 
     void cancelOutfitSwap(String requestId);
+
+    // ===== Active multimodal model selection =====
+    // Switch which Gemma 4 .litertlm bundle backs generate()/addImage()/addAudio().
+    // setActiveModel persists the choice and reloads the engine on the next
+    // request (closing any live session). Returns the now-active model id (the
+    // request id if accepted, the previous id if unknown/unchanged).
+    // Used by StatusActivity's model switch; safe for hosts to call too.
+    String getActiveModel();
+    String setActiveModel(String modelId);
 }

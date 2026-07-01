@@ -9,6 +9,11 @@
         android:name="com.nothing.localai.permission.BIND_AI"
         android:protectionLevel="normal" />
 
+    <!-- StatusActivity binds the :inference service (guarded by BIND_AI) to
+         read / switch the active model, so the app must hold the permission
+         it defines. -->
+    <uses-permission android:name="com.nothing.localai.permission.BIND_AI" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
