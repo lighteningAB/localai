@@ -1,0 +1,80 @@
+diff --git a/litert/vendors/qualcomm/core/backends/htp_backend.cc b/litert/vendors/qualcomm/core/backends/htp_backend.cc
+index 6dd4149..2adbf9c 100644
+--- a/litert/vendors/qualcomm/core/backends/htp_backend.cc
++++ b/litert/vendors/qualcomm/core/backends/htp_backend.cc
+@@ -412,6 +412,14 @@ bool HtpBackend::Init(const Options& options, std::optional<SocInfo> soc_info) {
+       auto soc_info_online =
+           FindSocInfo(static_cast<SnapdragonModel>(soc_model));
+       soc_info_ = soc_info_online.value_or(kSocInfos[0]);
++      QNN_LOG_ERROR(
++          "[NPU-DEBUG] platform_info OK; numHwDevices=%u raw socModel=%u "
++          "matched=%d resolved soc=%s arch=%d",
++          device_platform_info->v1.numHwDevices, soc_model,
++          soc_info_online.has_value() ? 1 : 0, soc_info_.soc_name,
++          static_cast<int>(soc_info_.dsp_arch));
++    } else {
++      QNN_LOG_ERROR("[NPU-DEBUG] CreateDevicePlatformInfo returned NULL");
+     }
+ #if defined(_WIN32) && defined(_M_ARM64)
+     if (soc_info_.dsp_arch == DspArch::NONE) {
+diff --git a/litert/vendors/qualcomm/core/schema/soc_table.cc b/litert/vendors/qualcomm/core/schema/soc_table.cc
+index e6263ea..c401601 100644
+--- a/litert/vendors/qualcomm/core/schema/soc_table.cc
++++ b/litert/vendors/qualcomm/core/schema/soc_table.cc
+@@ -42,6 +42,12 @@ constexpr SocInfo kSocInfos[] = {
+     {SocInfo("SM8750", SnapdragonModel::SM8750, DspArch::V79,
+              8  // vtcm_size_in_mb
+              )},
++    {SocInfo("SM8735", SnapdragonModel::SM8735, DspArch::V73,
++             8  // vtcm_size_in_mb
++             )},
++    {SocInfo("SM8735", SnapdragonModel::SM8735_SUN, DspArch::V73,
++             8  // vtcm_size_in_mb
++             )},
+     {SocInfo("SXR2330P", SnapdragonModel::SXR2330P, DspArch::V79,
+              8  // vtcm_size_in_mb
+              )},
+diff --git a/litert/vendors/qualcomm/core/schema/soc_table.h b/litert/vendors/qualcomm/core/schema/soc_table.h
+index 49bee51..6ca9895 100644
+--- a/litert/vendors/qualcomm/core/schema/soc_table.h
++++ b/litert/vendors/qualcomm/core/schema/soc_table.h
+@@ -24,7 +24,12 @@ enum class SnapdragonModel {
+   SXR2330P = 75,
+   QCS9100 = 77,
+   QCS8300 = 82,
++  SM8735 = 85,
+   SM8850 = 87,
++  // Some SM8735 ("sun" / Snapdragon 8s Gen 4) units report a fused socModel of
++  // 91 via QnnDevice_getPlatformInfo (QNN's HTP runtime still detects them as
++  // "SM8735"); 91 is absent from the QAIRT QnnTypes.h enum. Maps to V73.
++  SM8735_SUN = 91,
+   SAR2230P = 95,
+   SW6100 = 96,
+ };
+diff --git a/litert/vendors/qualcomm/dispatch/dispatch_api.cc b/litert/vendors/qualcomm/dispatch/dispatch_api.cc
+index 28c231c..4e701a1 100644
+--- a/litert/vendors/qualcomm/dispatch/dispatch_api.cc
++++ b/litert/vendors/qualcomm/dispatch/dispatch_api.cc
+@@ -127,12 +127,21 @@ LiteRtStatus Initialize(const LiteRtRuntimeContext* runtime_context,
+                "Failed to parse qnn options, using default settings. %s",
+                qnn_opts.Error().Message().c_str());
+   }
++  // [NPU-DEBUG SM8735] Force verbose QNN logging regardless of the options
++  // litertlm passes (it sets log level off, hiding the real backend/device
++  // error behind "Failed to set up QNN manager"). QNN callback logs to logcat
++  // tag "qnn"; litert QNNLogger logs to tag "lrt-qc".
++  qnn_options.SetLogLevel(::qnn::LogLevel::kDebug);
++  ::qnn::QNNLogger::SetLogLevel(::qnn::LogLevel::kDebug);
++  LITERT_LOG(LITERT_INFO,
++             "[NPU-DEBUG] forced QNN log level kDebug; soc_info=auto-detect");
+   if (auto qnn_manager = QnnManager::Create(
+           /*options=*/qnn_options,
+           /*shared_library_dir=*/shared_library_dir_opt,
+           /*soc_model*/ std::nullopt);
+       !qnn_manager) {
+-    LITERT_LOG(LITERT_ERROR, "%s", qnn_manager.Error().Message().c_str());
++    LITERT_LOG(LITERT_ERROR, "[NPU-DEBUG] QnnManager::Create failed: %s",
++               qnn_manager.Error().Message().c_str());
+     return qnn_manager.Error().Status();
+   } else {
+     if (const auto& custom_op_package = qnn_options.GetCustomOpPackage();
