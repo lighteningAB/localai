@@ -94,9 +94,18 @@ it would fix every SM8735 device and is uncontroversial.
 
 ---
 
-## 4. Forward plan (ordered; each step gates the next)
+## 4. Forward plan — **the goal is Gemma 4.** Critical path = the AOT compile (step 3);
+start it immediately (Linux box setup + flag verification have no dependency on
+anything else). Steps 1–2 are *optional de-risk probes* that can run in parallel —
+they do NOT gate step 3. Their only purpose: if the Gemma-4 artifact later fails to
+load, a passed probe proves the runtime stack is fine and isolates the fault to our
+compile. If you'd rather go straight at Gemma 4, skip to step 3 and fall back to
+step 1 only on failure.
 
-### Step 1 — prove the full stack with the published V73 Gemma3-1B (½ day, high value)
+### Step 1 (optional, parallel) — validate the runtime with the published V73 Gemma3-1B (½ day)
+Diagnostic only — Gemma 3 is NOT the goal. It's the only *known-good* V73 `.litertlm`
+in existence, from the same litert-community pipeline, so it exercises the identical
+litertlm→dispatch→QNN→V73 path our Gemma-4 artifact will use.
 No AOT, no app. Download `Gemma3-1B-IT_q4_ekv1280_SM8550.litertlm` (litert-community,
 gated HF — same account access as gemma-4) and the **LiteRT-LM v0.11.0 CLI**
 (`litert_lm_main.android_arm64` release asset). Stage a self-contained dir:
@@ -112,19 +121,18 @@ adb shell 'cd /data/local/tmp/lm && chmod 755 litert_lm_main.android_arm64 && \
   --model_path=Gemma3-1B-IT_q4_ekv1280_SM8550.litertlm --backend=npu \
   --input_prompt="What is the capital of France?"'   # check --help for exact flags
 ```
-- **Tokens appear → the entire NPU-LLM stack incl. our dispatch fix is proven**; all
-  that remains for Gemma-4 is the AOT artifact (step 3).
+- **Tokens appear → the entire NPU-LLM stack incl. our dispatch fix is proven**; any
+  later Gemma-4 load failure is then known to be our compile, not the runtime.
 - Fails at FastRPC/PD → apply the unsigned-PD contingency (step 4) and retry.
 - Fails elsewhere → the forced-kDebug logs now show the real error; fix in this repo,
   rebuild .so, iterate — all via the CLI loop (minutes per cycle, no APK).
 
-### Step 2 — same bundle through the app (few hours)
-Add a `GEMMA3_1B_NPU` catalog entry in localai (or repoint `GEMMA4_E2B_NPU`
-temporarily), rebuild (platform-signed, `QNN_SDK_ROOT` = QAIRT 2.44), `install -r`,
-push bundle + `chcon`, StatusActivity → NPU → "Test active model". Proves the
-app/JNI/binder path on top of step 1.
+### Step 2 (optional) — same probe bundle through the app (few hours)
+Only worth doing if step 1 ran. Temporary catalog entry in localai, rebuild
+(platform-signed, `QNN_SDK_ROOT` = QAIRT 2.44), `install -r`, push bundle + `chcon`,
+StatusActivity → NPU → "Test active model". Proves the app/JNI/binder path.
 
-### Step 3 — AOT-compile Gemma-4 E2B for V73 (the big one; Linux x86_64 box)
+### Step 3 — **CRITICAL PATH: AOT-compile Gemma-4 E2B for V73** (Linux x86_64 box)
 Follow `GEMMA4_V73_AOT_RUNBOOK.md` **after** verifying its flags (§2 issue 6):
 `litert-torch export-hf --model=google/gemma-4-E2B-it --aot_backend=qualcomm
 --aot_soc_model=SM8550` (SM8550 = V73; the AOT toolchain has no SM8735 entry — arch is
