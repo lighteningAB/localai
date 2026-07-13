@@ -93,3 +93,51 @@ target_link_libraries(imagegen PRIVATE
 target_include_directories(imagegen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/MNN/include
 )
+
+# ============================================================================
+# llama.cpp engine (libllmcpp.so) — second LLM backend beside Kotlin LiteRT-LM.
+# Hosts Gemma 4 12B QAT Q4_0 on the CPU (the LiteRT-LM GPU runtime hits the
+# Adreno 1 GB logits-alloc cap; see ModelId.kt / LiteRT-LM #2461).
+#
+# llama + ggml are built STATIC and linked into our single SHARED libllmcpp.so
+# (same self-contained pattern as MNN -> imagegen above). CPU-only for now.
+# ============================================================================
+set(BUILD_SHARED_LIBS      OFF CACHE INTERNAL "" FORCE)   # static llama+ggml
+set(LLAMA_BUILD_COMMON     OFF CACHE INTERNAL "" FORCE)   # hand-roll Gemma prompt + raw sampler; skip common (curl dep)
+set(LLAMA_BUILD_TESTS      OFF CACHE INTERNAL "" FORCE)
+set(LLAMA_BUILD_TOOLS      OFF CACHE INTERNAL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES   OFF CACHE INTERNAL "" FORCE)
+set(LLAMA_BUILD_SERVER     OFF CACHE INTERNAL "" FORCE)
+set(LLAMA_BUILD_APP        OFF CACHE INTERNAL "" FORCE)
+set(LLAMA_BUILD_HTML       OFF CACHE INTERNAL "" FORCE)
+set(LLAMA_BUILD_UI         OFF CACHE INTERNAL "" FORCE)
+set(LLAMA_CURL             OFF CACHE INTERNAL "" FORCE)   # no libcurl on device
+set(GGML_OPENMP            OFF CACHE INTERNAL "" FORCE)   # NDK ships no OpenMP
+set(GGML_LLAMAFILE         OFF CACHE INTERNAL "" FORCE)   # incompatible on Android
+set(GGML_OPENCL            OFF CACHE INTERNAL "" FORCE)   # CPU-only milestone
+set(GGML_HEXAGON           OFF CACHE INTERNAL "" FORCE)   # NPU path deferred
+set(GGML_CPU_REPACK        ON  CACHE INTERNAL "" FORCE)   # Q4_0 -> Q4_X_X for i8mm
+# Default NDK arm64-v8a is baseline armv8-a: ggml's dotprod/i8mm compile-checks
+# fail, so Q4_0 matmul falls back to plain NEON (~4x slower — measured <1 tok/s
+# for 12B). Pin the arch so the int8 matmul kernels (i8mm = vmmlaq_s32) build.
+# Safe here because the 12B model is RAM-gated to flagship SoCs (SM8xxx) that
+# all implement dotprod + i8mm.
+set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+i8mm+fp16" CACHE INTERNAL "" FORCE)
+add_subdirectory(3rdparty/llama.cpp EXCLUDE_FROM_ALL)
+
+add_library(llmcpp SHARED
+    llamacpp/llama_bridge.cpp
+)
+
+target_link_libraries(llmcpp PRIVATE
+    llama
+    log
+    android
+)
+
+target_include_directories(llmcpp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/llama.cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/llama.cpp/ggml/include
+)
+
+target_compile_options(llmcpp PRIVATE -fvisibility=hidden)

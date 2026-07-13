@@ -1,3 +1,6 @@
 [submodule "app/src/main/cpp/3rdparty/MNN"]
 	path = app/src/main/cpp/3rdparty/MNN
 	url = https://github.com/alibaba/MNN.git
+[submodule "app/src/main/cpp/3rdparty/llama.cpp"]
+	path = app/src/main/cpp/3rdparty/llama.cpp
+	url = https://github.com/ggml-org/llama.cpp.git

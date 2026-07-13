@@ -16,6 +16,11 @@ object ModelId {
     // from StatusActivity; see ModelPrefs / LlmRunner.setActiveModel.
     const val GEMMA4_E2B_NPU = "gemma4-e2b-it-npu"
 
+    // Gemma 4 12B, QAT Q4_0 GGUF, run on the CPU via llama.cpp (libllmcpp.so).
+    // The LiteRT-LM GPU runtime can't host the 12B (Adreno 1 GB logits-alloc
+    // cap; LiteRT-LM #2461). RAM-gated to flagship devices — see ModelSpec.
+    const val GEMMA4_12B_QAT = "gemma4-12b-it-qat"
+
     // Experiment branch: re-attempt Gemma 4 E4B on LiteRT-LM 0.11.0 (May 2026).
     // 0.10.2 SIGSEGV'd deterministically on the multimodal vision path on
     // Snapdragon 8s Gen 4. 0.11.0's changelog does not call out a vision fix,
@@ -45,6 +50,18 @@ data class ModelStatus(
  */
 enum class Accelerator { CPU_GPU, NPU }
 
+/**
+ * Which inference runtime hosts this model.
+ *
+ * - [LITERTLM]: the Kotlin `com.google.ai.edge.litertlm` path ([LlmRunner]).
+ *   The default for every Gemma 4 .litertlm / .task bundle.
+ * - [LLAMACPP]: the native llama.cpp engine ([LlamaCppRunner] / libllmcpp.so),
+ *   for GGUF models the LiteRT-LM runtime can't host. Gemma 4 12B lives here:
+ *   its fp32 logits tensor overflows the Adreno 1 GB single-allocation cap on
+ *   the LiteRT-LM GPU backend (LiteRT-LM issue #2461), so it runs on the CPU.
+ */
+enum class Backend { LITERTLM, LLAMACPP }
+
 data class ModelSpec(
     val id: String,
     val fileName: String,
@@ -54,6 +71,14 @@ data class ModelSpec(
     val supportsVision: Boolean,
     val supportsAudio: Boolean,
     val accelerator: Accelerator = Accelerator.CPU_GPU,
+    val backend: Backend = Backend.LITERTLM,
+    /**
+     * Minimum device RAM (bytes, ActivityManager.MemoryInfo.totalMem) required
+     * to even attempt this model. 0 = no floor. The 12B needs ~7 GB resident
+     * weights + KV + activations; attempting it on an 8 GB phone OOM-kills the
+     * process, so the service refuses below this and surfaces a clean error.
+     */
+    val minRamBytes: Long = 0,
 )
 
 object ModelCatalog {
@@ -131,15 +156,37 @@ object ModelCatalog {
         accelerator = Accelerator.NPU,
     )
 
+    // Gemma 4 12B QAT Q4_0 GGUF (google/gemma-4-12B-it-qat-q4_0-gguf). Runs on
+    // the CPU via llama.cpp — sidesteps the Adreno 1 GB logits-alloc cap that
+    // blocks the .litertlm 12B on the GPU (LiteRT-LM #2461). Text-only for now
+    // (the repo's mmproj vision projector is not bundled). Push:
+    //   adb push gemma-4-12b-it-qat-q4_0.gguf /data/local/tmp/
+    //   adb shell run-as com.nothing.localai.debug \
+    //     cp /data/local/tmp/gemma-4-12b-it-qat-q4_0.gguf files/models/
+    val GEMMA4_12B_QAT = ModelSpec(
+        id = ModelId.GEMMA4_12B_QAT,
+        fileName = "gemma-4-12b-it-qat-q4_0.gguf",
+        downloadUrl = "",
+        sha256 = null,
+        totalBytes = 6_975_877_728L, // ~6.5 GiB
+        supportsVision = false,
+        supportsAudio = false,
+        backend = Backend.LLAMACPP,
+        // ~7 GB weights + KV + activations. Require ~12 GB total RAM so we never
+        // attempt it on 8 GB devices (guaranteed OOM). Canoe (24 GB) passes.
+        minRamBytes = 12_000_000_000L,
+    )
+
     fun byId(id: String): ModelSpec? = when (id) {
         ModelId.GEMMA3N_E2B_INT4 -> GEMMA3N_E2B
         ModelId.GEMMA3N_E4B_INT4 -> GEMMA3N_E4B
         ModelId.GEMMA4_E2B_INT4 -> GEMMA4_E2B
         ModelId.GEMMA4_E4B_INT4 -> GEMMA4_E4B
         ModelId.GEMMA4_E2B_NPU -> GEMMA4_E2B_NPU
+        ModelId.GEMMA4_12B_QAT -> GEMMA4_12B_QAT
         else -> null
     }
 
     /** Models offered in the StatusActivity switch, in display order. */
-    val selectable: List<ModelSpec> = listOf(GEMMA4_E4B, GEMMA4_E2B, GEMMA4_E2B_NPU)
+    val selectable: List<ModelSpec> = listOf(GEMMA4_E4B, GEMMA4_E2B, GEMMA4_E2B_NPU, GEMMA4_12B_QAT)
 }

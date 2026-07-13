@@ -1,8 +1,8 @@
 package com.nothing.localai.session
 
 import android.content.Context
-import com.nothing.localai.llm.ChatSession
-import com.nothing.localai.llm.LlmRunner
+import com.nothing.localai.llm.InferenceRunner
+import com.nothing.localai.llm.InferenceSession
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -20,25 +20,26 @@ import java.util.concurrent.ConcurrentHashMap
  * [maxLive] is retained for API compatibility but pinned to 1 in practice.
  */
 class SessionRegistry(
-    private val runner: LlmRunner,
-    private val ctx: Context,
+    private val runner: InferenceRunner,
+    @Suppress("unused") private val ctx: Context,
     @Suppress("unused") private val maxLive: Int = 1,
 ) {
 
-    private val sessions = ConcurrentHashMap<String, ChatSession>()
+    private val sessions = ConcurrentHashMap<String, InferenceSession>()
 
-    fun getOrCreate(sessionId: String): ChatSession {
+    fun getOrCreate(sessionId: String): InferenceSession {
         sessions[sessionId]?.let { return it }
         synchronized(sessions) {
             sessions[sessionId]?.let { return it }
             // Close every other live session synchronously — LiteRT-LM's
             // engine refuses createConversation while any Conversation is
-            // still open against it.
+            // still open against it (llama.cpp has no such limit, but keeping a
+            // single live KV bounds RAM either way).
             sessions.entries.toList().forEach { (sid, s) ->
                 sessions.remove(sid)
                 runCatching { s.close() }
             }
-            val s = ChatSession(sessionId, runner, ctx)
+            val s = runner.newSession(sessionId)
             sessions[sessionId] = s
             return s
         }

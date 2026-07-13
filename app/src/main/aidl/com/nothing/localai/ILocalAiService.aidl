@@ -72,4 +72,13 @@ interface ILocalAiService {
     // Used by StatusActivity's model switch; safe for hosts to call too.
     String getActiveModel();
     String setActiveModel(String modelId);
+
+    // ===== Constrained generation (GBNF) =====
+    // Like generate(), but constrains output to a GBNF grammar (constrained
+    // decoding — e.g. force valid UI-spec JSON or a tool call). Only the
+    // llama.cpp backend (Gemma 4 12B) enforces the grammar; LiteRT-LM models
+    // have no grammar API and fall back to plain generation (grammar ignored),
+    // so callers must keep their repair/validation net for those. Empty grammar
+    // behaves exactly like generate(). Returns a requestId for cancel().
+    String generateConstrained(String sessionId, String prompt, String grammar, ITokenCallback cb);
 }

@@ -13,8 +13,8 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.nothing.localai.imagegen.ImageGenRunner
 import com.nothing.localai.imagegen.OutfitSwapRunner
+import com.nothing.localai.llm.EngineManager
 import com.nothing.localai.llm.LlmDownloader
-import com.nothing.localai.llm.LlmRunner
 import com.nothing.localai.session.SessionRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -28,7 +28,9 @@ private const val FG_NOTIFICATION_ID = 1001
 class LocalAiService : LifecycleService() {
 
     private val downloader by lazy { LlmDownloader(applicationContext) }
-    private val runner by lazy { LlmRunner(applicationContext, downloader) }
+    // Routes to LiteRT-LM or llama.cpp by the active model's backend, and
+    // enforces the per-model RAM floor on setActiveModel.
+    private val runner by lazy { EngineManager(applicationContext, downloader) }
     private val sessions by lazy {
         // LiteRT-LM 0.11.0 caps the engine at one live Conversation; the
         // registry enforces single-active anyway, but pass 1 explicitly so
@@ -147,6 +149,32 @@ class LocalAiService : LifecycleService() {
 
         override fun cancel(requestId: String) {
             sessions.cancel(requestId)
+        }
+
+        override fun generateConstrained(
+            sessionId: String,
+            prompt: String,
+            grammar: String,
+            cb: ITokenCallback,
+        ): String {
+            val requestId = java.util.UUID.randomUUID().toString()
+            beginRequest()
+            val wrapped = object : ITokenCallback.Stub() {
+                override fun onToken(rid: String, text: String) = cb.onToken(rid, text)
+                override fun onDone(rid: String, full: String) {
+                    try { cb.onDone(rid, full) } finally { endRequest() }
+                }
+                override fun onError(rid: String, code: String, msg: String) {
+                    try { cb.onError(rid, code, msg) } finally { endRequest() }
+                }
+            }
+            try {
+                sessions.getOrCreate(sessionId).generateConstrained(requestId, prompt, grammar, wrapped)
+            } catch (t: Throwable) {
+                Log.e(TAG, "generateConstrained failed", t)
+                runCatching { wrapped.onError(requestId, "GENERATE_FAILED", t.message ?: "unknown") }
+            }
+            return requestId
         }
 
         override fun addImage(sessionId: String, jpegFd: ParcelFileDescriptor) {

@@ -74,7 +74,7 @@ private fun wrapPcm16MonoAsWav(pcm: ByteArray, sampleRate: Int): ByteArray {
 class LlmRunner(
     private val ctx: Context,
     private val downloader: LlmDownloader,
-) {
+) : InferenceRunner {
 
     @Volatile private var engine: Engine? = null
     // Active model is persisted in :inference's ModelPrefs and swappable at
@@ -83,7 +83,10 @@ class LlmRunner(
     private val jobs = ConcurrentHashMap<String, Job>()
     val spec: ModelSpec get() = ModelCatalog.byId(modelId) ?: error("unknown model $modelId")
 
-    fun activeModelId(): String = modelId
+    override fun activeModelId(): String = modelId
+
+    override fun newSession(sessionId: String): InferenceSession =
+        ChatSession(sessionId, this, ctx)
 
     @Synchronized
     fun engine(): Engine {
@@ -166,7 +169,7 @@ class LlmRunner(
      * No-op (returns false) if [modelId] is already active or unknown.
      */
     @Synchronized
-    fun setActiveModel(newId: String): Boolean {
+    override fun setActiveModel(newId: String): Boolean {
         if (ModelCatalog.byId(newId) == null) {
             Log.w(TAG, "setActiveModel: unknown model $newId")
             return false
@@ -180,6 +183,16 @@ class LlmRunner(
         return true
     }
 
+    /** Adopt an active model id chosen by [EngineManager] (which owns the
+     *  ModelPrefs write and the cross-backend teardown). Frees the live engine
+     *  so the next [engine] call rebuilds against [newId]. */
+    @Synchronized
+    fun adoptModel(newId: String) {
+        engine?.let { runCatching { it.close() } }
+        engine = null
+        modelId = newId
+    }
+
     fun newConversation(): Conversation =
         engine().createConversation(ConversationConfig())
 
@@ -187,7 +200,7 @@ class LlmRunner(
         jobs[requestId] = job
     }
 
-    fun cancel(requestId: String) {
+    override fun cancel(requestId: String) {
         jobs[requestId]?.cancel()
     }
 
@@ -195,7 +208,7 @@ class LlmRunner(
         jobs.remove(requestId)
     }
 
-    fun close() {
+    override fun close() {
         engine?.close()
         engine = null
     }
@@ -210,28 +223,28 @@ class ChatSession(
     private val sessionId: String,
     private val runner: LlmRunner,
     private val ctx: Context,
-) {
+) : InferenceSession {
     private var conversation: Conversation = runner.newConversation()
     private val pendingImages = mutableListOf<File>()
     private var pendingAudio: ByteArray? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Synchronized
-    fun reset() {
+    override fun reset() {
         runCatching { conversation.close() }
         conversation = runner.newConversation()
         clearPending()
     }
 
     @Synchronized
-    fun close() {
+    override fun close() {
         runCatching { conversation.close() }
         clearPending()
         scope.cancel()
     }
 
     @Synchronized
-    fun addImage(jpegFd: ParcelFileDescriptor) {
+    override fun addImage(jpegFd: ParcelFileDescriptor) {
         if (!runner.spec.supportsVision) {
             Log.w(TAG, "[$sessionId] addImage on non-vision model; ignored")
             jpegFd.close(); return
@@ -256,7 +269,7 @@ class ChatSession(
     }
 
     @Synchronized
-    fun addAudio(pcmFd: ParcelFileDescriptor, sampleRate: Int) {
+    override fun addAudio(pcmFd: ParcelFileDescriptor, sampleRate: Int) {
         if (!runner.spec.supportsAudio) {
             Log.w(TAG, "[$sessionId] addAudio on non-audio model; ignored")
             pcmFd.close(); return
@@ -276,7 +289,7 @@ class ChatSession(
         }
     }
 
-    fun generate(requestId: String, prompt: String, cb: ITokenCallback) {
+    override fun generate(requestId: String, prompt: String, cb: ITokenCallback) {
         val full = StringBuilder()
         val parts: List<Content>
         val toCleanup: List<File>

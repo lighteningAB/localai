@@ -38,6 +38,11 @@ class StatusActivity : AppCompatActivity() {
     // viewId -> modelId, so the RadioGroup check listener can resolve selections.
     private val buttonModel = mutableMapOf<Int, String>()
 
+    // Set by `--es seammodel <id>`: switch active model over the binder then run
+    // the diagnostic through the service (exercises EngineManager + the backend
+    // seam end-to-end, not just NativeLlama). Consumed once the service binds.
+    @Volatile private var pendingSeamModel: String? = null
+
     @Volatile private var service: ILocalAiService? = null
     // Suppresses the check listener while we programmatically sync the UI to the
     // service's active model, so syncing doesn't fire a spurious setActiveModel.
@@ -47,6 +52,7 @@ class StatusActivity : AppCompatActivity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             service = ILocalAiService.Stub.asInterface(binder)
             refreshActiveModel()
+            pendingSeamModel?.let { m -> pendingSeamModel = null; runSeamTest(m) }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
@@ -70,6 +76,87 @@ class StatusActivity : AppCompatActivity() {
         }
         testButton.setOnClickListener { runDiagnostic() }
         renderStatus(ModelId.DEFAULT)
+        maybeRunLlamaSmoke(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        maybeRunLlamaSmoke(intent)
+    }
+
+    /**
+     * Throwaway bring-up harness for the llama.cpp engine, triggered by
+     *   adb shell am start -n com.nothing.localai.debug/com.nothing.localai.ui.StatusActivity \
+     *     --es llmtest "your prompt"
+     * Loads libllmcpp, pings, and (if the 12B QAT GGUF is present in files/models)
+     * loads it on the CPU and streams one turn — logging tokens/sec to logcat
+     * ("LlamaSmoke"). Remove once the engine seam lands.
+     */
+    /** Switch the active model over the binder, then run the through-service
+     *  diagnostic — the real seam path (EngineManager -> LlamaCppRunner). */
+    private fun runSeamTest(modelId: String) {
+        val svc = service ?: return
+        io.execute {
+            val now = runCatching { svc.setActiveModel(modelId) }.getOrNull()
+            Log.i("SeamTest", "setActiveModel($modelId) -> active now=$now")
+            runOnUiThread {
+                if (now != modelId) {
+                    testOutput.text = "setActiveModel refused/failed: active=$now"
+                }
+                runDiagnostic()
+            }
+        }
+    }
+
+    private fun maybeRunLlamaSmoke(intent: Intent?) {
+        intent?.getStringExtra("seammodel")?.let { m ->
+            pendingSeamModel = m
+            if (service != null) { pendingSeamModel = null; runSeamTest(m) }
+            return
+        }
+        val prompt = intent?.getStringExtra("llmtest") ?: return
+        // Optional GBNF grammar to exercise constrained decoding. `--es grammar json`
+        // is a built-in shortcut (adb can't pass multi-line GBNF) forcing a
+        // {"title": "...", "items": [...]} object — a UI-spec proxy.
+        val grammar = when (intent.getStringExtra("grammar")) {
+            "json" -> """
+                root  ::= "{" ws "\"title\"" ws ":" ws str ws "," ws "\"items\"" ws ":" ws arr ws "}"
+                str   ::= "\"" char* "\""
+                char  ::= [^"\\]
+                arr   ::= "[" ws (str (ws "," ws str)*)? ws "]"
+                ws    ::= [ \t\n]*
+            """.trimIndent()
+            else -> intent.getStringExtra("grammar") ?: ""
+        }
+        io.execute {
+            val T = "LlamaSmoke"
+            if (!com.nothing.localai.llm.NativeLlama.ensureLoaded()) {
+                Log.e(T, "libllmcpp.so failed to load"); return@execute
+            }
+            Log.i(T, "ping: ${com.nothing.localai.llm.NativeLlama.nativePing()}")
+            val gguf = java.io.File(filesDir, "models/gemma-4-12b-it-qat-q4_0.gguf")
+            if (!gguf.exists()) { Log.w(T, "no gguf at ${gguf.absolutePath}; ping-only"); return@execute }
+            val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+            val t0 = System.currentTimeMillis()
+            val model = com.nothing.localai.llm.NativeLlama.nativeLoadModel(gguf.absolutePath)
+            if (model == 0L) { Log.e(T, "load failed"); return@execute }
+            Log.i(T, "model loaded in ${System.currentTimeMillis() - t0}ms")
+            val ctx = com.nothing.localai.llm.NativeLlama.nativeCreateContext(model, 4096, nThreads, 42)
+            if (ctx == 0L) { Log.e(T, "ctx failed"); com.nothing.localai.llm.NativeLlama.nativeFreeModel(model); return@execute }
+            val nTok = intArrayOf(0)
+            val g0 = System.currentTimeMillis()
+            val sink = object : com.nothing.localai.llm.NativeLlama.TokenSink {
+                override fun onToken(text: String) { nTok[0]++ }
+            }
+            if (grammar.isNotEmpty()) Log.i(T, "grammar constrained (${grammar.length} chars)")
+            val out = com.nothing.localai.llm.NativeLlama.nativeGenerate(ctx, model, prompt, grammar, 128, sink)
+            val dt = System.currentTimeMillis() - g0
+            val tps = if (dt > 0) nTok[0] * 1000.0 / dt else 0.0
+            Log.i(T, "generated ${nTok[0]} tok in ${dt}ms = %.1f tok/s".format(tps))
+            Log.i(T, "OUTPUT: $out")
+            com.nothing.localai.llm.NativeLlama.nativeFreeContext(ctx)
+            com.nothing.localai.llm.NativeLlama.nativeFreeModel(model)
+        }
     }
 
     /**
@@ -172,7 +259,11 @@ class StatusActivity : AppCompatActivity() {
     }
 
     private fun label(spec: ModelSpec): String {
-        val accel = if (spec.accelerator == Accelerator.NPU) "Hexagon NPU" else "CPU+GPU"
+        val accel = when {
+            spec.backend == com.nothing.localai.llm.Backend.LLAMACPP -> "llama.cpp CPU"
+            spec.accelerator == Accelerator.NPU -> "Hexagon NPU"
+            else -> "CPU+GPU"
+        }
         return "${spec.fileName}  ·  $accel"
     }
 
