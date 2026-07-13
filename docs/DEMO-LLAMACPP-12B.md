@@ -1,128 +1,92 @@
-# Demo: Gemma 4 12B on-device + constrained decoding
+# Demo: Gemma 4 12B driving ai-playground cards, on-device
 
-What to show colleagues, and exactly how. Everything here is verified on the
-SM8850 **canoe** board (adb serial `7ec11429`, 24 GB RAM).
+What to show colleagues, and exactly how. Everything below is **verified
+end-to-end** on the SM8850 canoe board (adb `7ec11429`, 24 GB RAM) with real
+screenshots — including the full ai-playground canvas running on the 12B.
 
 ## The one-line story
 
-> Gemma 4 **12B** was a dead end on our LiteRT-LM stack — the GPU runtime can't
-> allocate its logits tensor (Adreno 1 GB cap; Google issue [#2461] is still
-> open). We added a **second inference backend (llama.cpp, CPU)** so the 12B QAT
-> model runs on-device, **and** it gives us **grammar-constrained decoding** —
-> the model is now *incapable* of emitting invalid UI-spec JSON.
+> Gemma 4 **12B** was a dead end on our stack — the LiteRT-LM GPU runtime can't
+> allocate its logits tensor (Adreno 1 GB cap; Google [#2461] still open). We
+> added a **second inference backend (llama.cpp, CPU)** to localai, so the same
+> canvas app now runs in two gears: **E4B for fast interaction, 12B for depth**
+> — plus **grammar-constrained decoding** (the model *cannot* emit invalid JSON).
 
 [#2461]: https://github.com/google-ai-edge/LiteRT-LM/issues/2461
 
----
+## The demo: two gears, one app (ai-playground canvas)
 
-## One-time setup (do before colleagues arrive)
+### Act 1 — fast gear (E4B, the fluid canvas)
+Active model = `gemma4-e4b-it-int4`. Voice or adb-inject a few quick cards:
+- "Make me a workout timer with a 3-item checklist"
+- "Weather in London" / "coffee shops near Soho" (map)
+- "Morning brief" (agentic ai_refresh tile — allowed on E4B)
+Snappy multi-card canvas; this is the product experience.
 
-1. **On office network / VPN** (the APK is signed by `sign.nothing.local`):
-   ```
-   cd ~/Documents/github/localai
-   git checkout feature/llamacpp-12b
-   git submodule update --init app/src/main/cpp/3rdparty/llama.cpp
-   ./gradlew :app:assembleDebug
-   adb -s 7ec11429 install -r app/build/outputs/apk/debug/app-debug.apk
-   ```
-   First build compiles llama.cpp (~8 min); later builds are cached.
+### Act 2 — deep gear (12B, "watch it think") ⭐
+Switch the model in localai's StatusActivity (or
+`--es seammodel gemma4-12b-it-qat`), then back in the canvas:
 
-2. **Push the model** (~7 GB, one-time; survives reinstalls of the *same* signer):
-   ```
-   MODEL=gemma-4-12b-it-qat-q4_0.gguf   # google/gemma-4-12B-it-qat-q4_0-gguf on HF
-   adb -s 7ec11429 push $MODEL /data/local/tmp/
-   adb -s 7ec11429 shell "run-as com.nothing.localai.debug cp /data/local/tmp/$MODEL files/models/"
-   adb -s 7ec11429 shell rm /data/local/tmp/$MODEL
-   ```
-   (Keep a Gemma-4 E4B `.litertlm` in `files/models/` too, for the switch demo.)
+- **"Plan a 3 day Tokyo food trip as sections with checklists"** (~3.5 min)
+  → a genuinely impressive card: Day 1 Tsukiji & Ginza (Tsukiji Outer Market
+  breakfast, Kabayaki in Ginza, Hamarikyu matcha…), Day 2 Shibuya & Shinjuku
+  (Omoide Yokocho yakitori, Golden Gai…), Day 3 Asakusa & Ueno — knowledge and
+  organization E4B simply cannot produce.
+- Shorter filler while people ask questions: **"Make me a workout timer card
+  with a 3 item checklist"** (~90 s).
 
-3. **Warm it once** before the room is watching — first load mmaps 7 GB.
+**Say:** "Twelve billion parameters, airplane mode, in your hand. It's not the
+fast gear — it's the *smart* gear, and the app knows the difference."
 
-**Expectations to set:** 12B on CPU is **~5 tokens/sec** (deliberate, readable
-speed — not a chatbot race). Load is ~3 s. Keep demo prompts short.
+The app auto-detects the heavy model (HeavyMode) and clamps itself: no per-card
+agent sessions, 2 tool hops max, tighter session rotation — that's why this is
+stable now (the unconstrained first attempt hard-rebooted the board).
 
----
-
-## Demo A — 12B thinking entirely on-device (GUI, no laptop needed)
-
-The cleanest live demo. Open the **Local AI** status screen on the phone:
-
-1. It lists selectable models. Tap **`gemma-4-12b-it-qat-q4_0.gguf · llama.cpp CPU`**.
-2. Tap **Test**. Watch tokens stream in; the footer shows `decode = ~5 tok/s`.
-
-**Say:** "This is a 12-billion-parameter model, no network, running on the CPU.
-The same model refuses to load on the GPU runtime — this is the only way it runs
-on the phone at all." Airplane-mode the device first for effect.
-
-Equivalent over adb (if projecting a terminal):
-```
-adb -s 7ec11429 shell am start -n com.nothing.localai.debug/com.nothing.localai.ui.StatusActivity \
-  --es seammodel "gemma4-12b-it-qat"
-adb -s 7ec11429 logcat -s NpuBench   # look for the BENCH line: streamedTokens / tok/s
-```
-
----
-
-## Demo B — the model *cannot* produce invalid JSON (GBNF) ⭐
-
-The headline. This is the reliability win for AI-generated UI.
-
+### Act 3 — guaranteed-valid JSON (GBNF)
 ```
 adb -s 7ec11429 shell am force-stop com.nothing.localai.debug
 adb -s 7ec11429 shell am start -n com.nothing.localai.debug/com.nothing.localai.ui.StatusActivity \
   --es llmtest "'List three fruits with a title'" --es grammar "json"
 adb -s 7ec11429 logcat -s LlamaSmoke
 ```
+Always exact `{"title": …, "items": […]}` — the grammar masks every invalid
+token at sampling time. "Malformed output is impossible, not just unlikely."
 
-Output is **guaranteed** to match the grammar, e.g.:
-```json
-{ "title": "Fresh Summer Fruits", "items": ["Mango", "Watermelon", "Pineapple"] }
-```
+### Talking point — RAM guard
+`setActiveModel(12B)` on a device under 12 GB RAM is **refused** (previous
+model kept, clean error): `EngineManager: setActiveModel: REFUSED … keeping …`.
+No OOM roulette on phones that can't hold it.
 
-**Say:** "The grammar constrains the sampler at every token — malformed JSON is
-mathematically impossible, not just unlikely. Today the app hand-repairs broken
-model output; with this, the composer can't emit a broken UI spec in the first
-place." (Optionally run it a few times — always valid.)
+## Setup (before colleagues arrive)
 
----
+1. Build + install **localai** (`feature/llamacpp-12b`) and **ai-playground**
+   (`master`). Both debug builds bind fine (BIND_AI is normal-level).
+   **Order matters:** if you ever reinstall localai, reinstall ai-playground
+   after it — the BIND_AI grant is re-derived at install time.
+2. Models in localai's `files/models/` (push via `/data/local/tmp` + `run-as`):
+   `gemma-4-12b-it-qat-q4_0.gguf` (~6.5 GB) and `gemma-4-E4B-it.litertlm`.
+3. **Prewarm the 12B once** (any short llmtest/seammodel run) before the room
+   is watching, and pre-generate the Tokyo card if you want it instantly
+   revisitable on the canvas.
 
-## Demo C — graceful on low-RAM devices (safety)
+## Timing + safety facts (measured)
 
-We never OOM-kill a phone that can't hold the 12B. The service checks device RAM
-against a 12 GB floor and refuses, keeping the current model.
+| | E4B | 12B (llama.cpp CPU) |
+|---|---|---|
+| Simple card | seconds | ~90 s |
+| Rich card (Tokyo trip) | – | ~3.5 min (1351-tok prefill 79 s + 335-tok spec) |
+| Decode rate | fast | ~5–6.5 tok/s (2 threads — faster than 8, which only throttled) |
+| Thermals | fine | peaks ~103 °C bursts, governor holds; survived repeated runs |
 
-Talking point + log evidence (canoe passes the floor, so this is the log from a
-simulated high floor during bring-up):
-```
-EngineManager: setActiveModel: REFUSED gemma4-12b-it-qat — device RAM ... < floor ...; keeping <previous>
-```
-**Say:** "On an 8 GB phone the switch is refused and the caller is told, instead
-of the process getting killed mid-generation."
-
----
-
-## Demo D — next step (not yet wired end-to-end)
-
-Wiring the 12B as the **ai-playground composer brain** (voice → 12B → UI cards),
-and having ai-playground call the new `generateConstrained()` so every card spec
-is grammar-valid. The localai side is done and exposed over AIDL (slot 20); the
-ai-playground binder mirror + a "use 12B" toggle are the remaining glue. Mention
-as "the payoff this unlocks," not something to click today.
-
----
+Stability fixes that made this possible (committed): decode capped at 2
+threads / prefill 4 (asymmetric), prefill chunked to n_batch=512 (whole-prompt
+batches killed the process), ggml fused RMS_NORM+MUL kernel disabled
+(`GGML_CPU_DISABLE_FUSION` — SIGSEGV on multi-threaded large-batch prefill),
+HeavyMode clamps in ai-playground.
 
 ## If something goes wrong live
-
-- **Engine/service died** (`DeadObjectException`): relaunch —
-  `adb -s 7ec11429 shell monkey -p com.nothing.localai.debug -c android.intent.category.LAUNCHER 1`.
-- **Model not found**: re-check `run-as com.nothing.localai.debug ls -l files/models/`.
-- **adb "device not found"**: `adb kill-server && adb start-server`.
-- **Don't** force-stop mid-generation; **don't** expect chatbot speed — 5 tok/s is
-  the story (a 12B model, on a CPU, in your hand).
-
-## What's committed
-
-Branch `feature/llamacpp-12b`. New backend seam (`InferenceRunner`/`Session`,
-`EngineManager`), `LlamaCppRunner`/`LlamaSession`, native `libllmcpp.so`
-(llama.cpp submodule), `NativeLlama` JNI, RAM guard (`ModelSpec.minRamBytes`),
-and `generateConstrained()` AIDL. Existing LiteRT path and AIDL calls unchanged.
+- Engine died: `adb shell monkey -p com.nothing.localai.debug -c android.intent.category.LAUNCHER 1`
+- adb lost: `adb kill-server && adb start-server`
+- Never force-stop mid-generation; never queue several 12B cards at once.
+- Fallback: E4B carries the canvas demo alone + Act 3 GBNF standalone still
+  tells the 12B story.
