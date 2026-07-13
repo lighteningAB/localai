@@ -16,8 +16,15 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "LlamaCppRunner"
-private const val CTX_TOKENS = 4096
+// 2048 (not 4096) halves the KV cache — plenty for one card and keeps RAM bounded.
+private const val CTX_TOKENS = 2048
 private const val MAX_GEN_TOKENS = 1024
+// Cap decode threads hard. All 8 cores at 100% cooked the SM8850 dev board
+// (thermal reboot at sustained load); even 4 threads spiked to ~100 C in
+// seconds. 2 threads roughly halves the heat-generation rate so short single
+// generations peak lower and the board recovers between cards. This board has
+// weak cooling for sustained CPU inference — 12B is a short, deliberate path.
+private const val MAX_THREADS = 2
 
 /**
  * llama.cpp runner (libllmcpp.so via [NativeLlama]) — the [Backend.LLAMACPP]
@@ -84,7 +91,7 @@ class LlamaCppRunner(
 
     fun createContext(): Long {
         val m = model()
-        val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+        val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(MAX_THREADS)
         val ctxPtr = NativeLlama.nativeCreateContext(m, CTX_TOKENS, nThreads, /*seed=*/42)
         check(ctxPtr != 0L) { "llama context creation failed" }
         return ctxPtr

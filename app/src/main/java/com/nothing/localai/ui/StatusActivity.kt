@@ -43,6 +43,9 @@ class StatusActivity : AppCompatActivity() {
     // seam end-to-end, not just NativeLlama). Consumed once the service binds.
     @Volatile private var pendingSeamModel: String? = null
 
+    // Single-flight guard for the llmtest smoke (see maybeRunLlamaSmoke).
+    private val smokeRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+
     @Volatile private var service: ILocalAiService? = null
     // Suppresses the check listener while we programmatically sync the UI to the
     // service's active model, so syncing doesn't fire a spurious setActiveModel.
@@ -130,18 +133,27 @@ class StatusActivity : AppCompatActivity() {
         }
         io.execute {
             val T = "LlamaSmoke"
+            // Guard against double-fire (onCreate + onNewIntent both consuming the
+            // extra): two concurrent runs each loaded a 7 GB model — the transient
+            // page-in spike drew an LMK signal-9 even on the 24 GB board.
+            if (!smokeRunning.compareAndSet(false, true)) {
+                Log.w(T, "smoke already running; ignoring duplicate trigger"); return@execute
+            }
+            try {
             if (!com.nothing.localai.llm.NativeLlama.ensureLoaded()) {
                 Log.e(T, "libllmcpp.so failed to load"); return@execute
             }
             Log.i(T, "ping: ${com.nothing.localai.llm.NativeLlama.nativePing()}")
             val gguf = java.io.File(filesDir, "models/gemma-4-12b-it-qat-q4_0.gguf")
             if (!gguf.exists()) { Log.w(T, "no gguf at ${gguf.absolutePath}; ping-only"); return@execute }
-            val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+            // Match the throttled LlamaCppRunner caps (2 threads, 2048 ctx) — the
+            // 8-thread/4096 config cooked the board. Keep this debug path safe.
+            val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(2)
             val t0 = System.currentTimeMillis()
             val model = com.nothing.localai.llm.NativeLlama.nativeLoadModel(gguf.absolutePath)
             if (model == 0L) { Log.e(T, "load failed"); return@execute }
             Log.i(T, "model loaded in ${System.currentTimeMillis() - t0}ms")
-            val ctx = com.nothing.localai.llm.NativeLlama.nativeCreateContext(model, 4096, nThreads, 42)
+            val ctx = com.nothing.localai.llm.NativeLlama.nativeCreateContext(model, 2048, nThreads, 42)
             if (ctx == 0L) { Log.e(T, "ctx failed"); com.nothing.localai.llm.NativeLlama.nativeFreeModel(model); return@execute }
             val nTok = intArrayOf(0)
             val g0 = System.currentTimeMillis()
@@ -156,6 +168,9 @@ class StatusActivity : AppCompatActivity() {
             Log.i(T, "OUTPUT: $out")
             com.nothing.localai.llm.NativeLlama.nativeFreeContext(ctx)
             com.nothing.localai.llm.NativeLlama.nativeFreeModel(model)
+            } finally {
+                smokeRunning.set(false)
+            }
         }
     }
 

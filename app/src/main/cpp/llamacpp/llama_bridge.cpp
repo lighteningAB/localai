@@ -32,8 +32,14 @@ std::atomic<bool> g_backend_ready{false};
 void ensure_backend() {
     bool expected = false;
     if (g_backend_ready.compare_exchange_strong(expected, true)) {
+        // The fused RMS_NORM+MUL CPU kernel SIGSEGVs on this build during
+        // multi-threaded large-batch prefill (symbolized: ops.cpp
+        // ggml_compute_forward_rms_norm_f32<fused> on a secondary thread,
+        // 512-token chunk). ggml checks this env at graph time — disable
+        // fusion outright; the unfused path is marginally slower and stable.
+        setenv("GGML_CPU_DISABLE_FUSION", "1", 1);
         llama_backend_init();
-        LOGI("llama backend initialized");
+        LOGI("llama backend initialized (cpu fusion disabled)");
     }
 }
 
@@ -133,10 +139,19 @@ Java_com_nothing_localai_llm_NativeLlama_nativeCreateContext(
 
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = (uint32_t) nCtx;
-    cp.n_batch = (uint32_t) nCtx;
+    // Chunk prefill at 512 rather than the full context. n_batch = n_ctx (4096)
+    // allocated a huge transient compute buffer and processed the whole system
+    // prompt in one CPU spike; 512 bounds peak memory and smooths the load.
+    cp.n_batch = (uint32_t) (nCtx < 512 ? nCtx : 512);
     if (nThreads > 0) {
+        // Asymmetric threading: decode is the SUSTAINED phase (minutes at 100%
+        // — what overheated the board), so it gets the caller's low cap; prefill
+        // is a short burst, so give it more cores to cut time-to-first-token on
+        // the app's ~1300-token system prompt.
         cp.n_threads = nThreads;
-        cp.n_threads_batch = nThreads;
+        // 6 prefill threads peaked 103°C on a ~1300-token prompt (near trip);
+        // 4 keeps the burst inside thermal budget at ~2/3 the speed.
+        cp.n_threads_batch = nThreads * 2 > 4 ? 4 : nThreads * 2;
     }
     llama_context* ctx = llama_init_from_model(m->model, cp);
     if (!ctx) return 0;
@@ -225,12 +240,19 @@ Java_com_nothing_localai_llm_NativeLlama_nativeGenerate(
     if (nTok < 0) { llama_sampler_free(smpl); return env->NewStringUTF(""); }
     toks.resize(nTok);
 
-    // Prefill the prompt.
+    // Prefill the prompt in n_batch-sized chunks. Submitting the whole prompt
+    // as one batch aborts the process when it exceeds n_batch (the app's routed
+    // system prompt is ~1300 tokens vs n_batch 512 — this killed :inference).
     LOGI("prefill: %d tokens (add_bos=%d)", (int) toks.size(), (int) add_bos);
-    if (llama_decode(c->ctx, llama_batch_get_one(toks.data(), (int32_t) toks.size())) != 0) {
-        LOGE("prefill decode failed");
-        llama_sampler_free(smpl);
-        return env->NewStringUTF("");
+    const int32_t nBatch = (int32_t) llama_n_batch(c->ctx);
+    for (int32_t off = 0; off < (int32_t) toks.size(); off += nBatch) {
+        const int32_t n = (int32_t) toks.size() - off < nBatch
+            ? (int32_t) toks.size() - off : nBatch;
+        if (llama_decode(c->ctx, llama_batch_get_one(toks.data() + off, n)) != 0) {
+            LOGE("prefill decode failed at offset %d", off);
+            llama_sampler_free(smpl);
+            return env->NewStringUTF("");
+        }
     }
     c->started = true;
     LOGI("prefill decoded");
